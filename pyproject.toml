@@ -27,3 +27,21 @@ preview = true
 
 [tool.ruff.lint.isort]
 combine-as-imports = true
+
+[tool.pyright]
+typeCheckingMode = "strict"
+reportMissingTypeStubs = "error"
+reportUnknownMemberType = "error"
+reportUnknownArgumentType = "error"
+reportUnknownVariableType = "error"
+reportUnknownLambdaType = "error"
+reportImplicitStringConcatenation = "error"
+reportUnnecessaryTypeIgnoreComment = "error"
+reportUnnecessaryCast = "error"
+reportUnnecessaryComparison = "error"
+reportUnnecessaryIsInstance = "error"
+reportUnnecessaryContains = "error"
+strictListInference = true
+strictDictionaryInference = true
+strictSetInference = true
+strictParameterNoneValue = true
