@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "pyright>=1.1.406",
     "ruff>=0.14.1",
+    "ty>=0.0.1a23",
 ]
 
 [tool.ruff]
