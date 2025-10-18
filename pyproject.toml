@@ -7,3 +7,22 @@ requires-python = ">=3.11"
 dependencies = [
     "ruff>=0.14.1",
 ]
+
+[tool.ruff]
+src = ["*.py"]
+exclude = [
+  "**/__pycache__",
+  "**/.pytest_cache",
+  "**/.venv",
+  "**/venv",
+  "**/htmlcov",
+  "**/*env/*",
+  "**/.git",
+  "**/*.yaml",
+  "**/*.yml",
+]
+line-length = 120
+preview = true
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
