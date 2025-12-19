@@ -1,7 +1,7 @@
 [project]
-name = "hello-python"
+name = "chromefleet"
 version = "0.1.0"
-description = "Hello Python"
+description = "Chrome Fleet"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
