@@ -1,0 +1,29 @@
+name: Container
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  container:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - run: docker build -t chromefleet .
+
+      - run: docker run -d --name chromefleet -p 8300:8300 -e TS_AUTHKEY chromefleet
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+
+      - name: Run the health check validation
+        run: while ! curl -s 'http://localhost:8300/health' | grep 'OK'; do sleep 1; done
+        timeout-minutes: 3
+
+      - name: Get the container logs
+        run: docker logs --details chromefleet
+        if: always()
