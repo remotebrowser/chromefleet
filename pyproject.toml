@@ -5,9 +5,11 @@ description = "Chrome Fleet"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "fastapi>=0.125.0",
     "pyright>=1.1.407",
     "ruff>=0.14.10",
     "ty>=0.0.4",
+    "uvicorn[standard]>=0.38.0",
 ]
 
 [tool.ruff]
