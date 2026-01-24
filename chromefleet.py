@@ -7,7 +7,7 @@ import sys
 from datetime import datetime
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
 TS_AUTHKEY = os.getenv("TS_AUTHKEY")
@@ -193,21 +193,21 @@ async def health() -> str:
     return f"OK {int(datetime.now().timestamp())} GIT_REV: {git_rev}"
 
 
-@app.get("/api/v1/start/{browser_id}")
-async def start_browse(browser_id: str):
+@app.post("/api/v1/browsers/{browser_id}")
+async def create_browser(browser_id: str):
     print(f"Starting browser {browser_id}...")
     container_name = f"chromium-{browser_id}"
     try:
         await launch_container(CONTAINER_IMAGE, container_name)
-        return await connect_browser(browser_id)
+        return await connect_browser_to_tailscale(browser_id)
     except Exception as e:
         detail = f"Unable to start browser {browser_id}!"
         print(f"{detail} Exception={e}")
         raise HTTPException(status_code=500, detail=detail)
 
 
-@app.get("/api/v1/stop/{browser_id}")
-async def stop_browser(browser_id: str):
+@app.delete("/api/v1/browsers/{browser_id}")
+async def delete_browser(browser_id: str):
     print(f"Stopping browser {browser_id}...")
     container_name = f"chromium-{browser_id}"
     if not await container_exists(container_name):
@@ -217,15 +217,15 @@ async def stop_browser(browser_id: str):
     try:
         await kill_container(container_name)
         print(f"Browser {browser_id} is stopped.")
-        return container_name
+        return {"container_name": container_name, "status": "deleted"}
     except Exception as e:
         detail = f"Unable to stop browser {browser_id}!"
         print(f"{detail} Exception={e}")
         raise HTTPException(status_code=500, detail=detail)
 
 
-@app.get("/api/v1/query/{browser_id}")
-async def query_browser(browser_id: str):
+@app.get("/api/v1/browsers/{browser_id}")
+async def get_browser(browser_id: str):
     print(f"Querying browser {browser_id}...")
     container_name = f"chromium-{browser_id}"
     if not await container_exists(container_name):
@@ -248,7 +248,7 @@ async def query_browser(browser_id: str):
                 raise HTTPException(status_code=500, detail=detail)
 
 
-@app.get("/api/v1/list")
+@app.get("/api/v1/browsers")
 async def list_browsers():
     print("Enumerating all browsers...")
     try:
@@ -261,8 +261,7 @@ async def list_browsers():
         raise HTTPException(status_code=500, detail=detail)
 
 
-@app.get("/api/v1/connect/{browser_id}")
-async def connect_browser(browser_id: str):
+async def connect_browser_to_tailscale(browser_id: str):
     print(f"Connecting browser {browser_id} to Tailscale...")
     container_name = f"chromium-{browser_id}"
     if not await container_exists(container_name):
@@ -276,7 +275,7 @@ async def connect_browser(browser_id: str):
             print(f"Setting up Tailscale for {container_name}: attempt {attempt + 1}/{MAX_ATTEMPTS}...")
             if await setup_tailscale(container_name):
                 print(f"Browser {browser_id} is connected to Tailscale.")
-                return await query_browser(browser_id)
+                return await get_browser(browser_id)
         raise Exception(f"Unable to setup Tailscale after {MAX_ATTEMPTS}!")
     except Exception as e:
         detail = f"Unable to connect browser {browser_id} to Tailscale!"
@@ -284,9 +283,14 @@ async def connect_browser(browser_id: str):
         raise HTTPException(status_code=500, detail=detail)
 
 
-@app.get("/api/v1/disconnect/{browser_id}")
+@app.post("/api/v1/browsers/{browser_id}/connect")
+async def connect_browser(browser_id: str):
+    return await connect_browser_to_tailscale(browser_id)
+
+
+@app.post("/api/v1/browsers/{browser_id}/disconnect")
 async def disconnect_browser(browser_id: str):
-    print(f"Disconnecting browser {browser_id} to Tailscale...")
+    print(f"Disconnecting browser {browser_id} from Tailscale...")
     container_name = f"chromium-{browser_id}"
     if not await container_exists(container_name):
         detail = f"Browser {browser_id} not found!"
@@ -295,14 +299,14 @@ async def disconnect_browser(browser_id: str):
     try:
         await terminate_tailscale(container_name)
         print(f"Browser {browser_id} is disconnected from Tailscale")
-        return "OK"
+        return {"status": "disconnected"}
     except Exception as e:
         detail = f"Unable to disconnect browser {browser_id} from Tailscale!"
         print(f"{detail} Exception={e}")
         raise HTTPException(status_code=500, detail=detail)
 
 
-@app.post("/api/v1/configure/{browser_id}")
+@app.post("/api/v1/browsers/{browser_id}/configure")
 async def configure_browser(browser_id: str, config: dict[str, str]):
     print(f"Configuring browser {browser_id} with config {config}...")
     container_name = f"chromium-{browser_id}"
@@ -313,28 +317,11 @@ async def configure_browser(browser_id: str, config: dict[str, str]):
     try:
         await configure_container(container_name, config)
         print(f"Browser {browser_id} is configured.")
-        return "OK"
+        return {"status": "configured"}
     except Exception as e:
         detail = f"Unable to configure browser {browser_id}!"
         print(f"{detail} Exception={e}")
         raise HTTPException(status_code=500, detail=detail)
-
-
-@app.get("/api/v1/configure/{browser_id}")
-async def configure_browser_get(browser_id: str, request: Request):
-    config = dict(request.query_params)
-    if config:
-        print(f"Configuring browser {browser_id} with {list(config.keys())}...")
-        container_name = f"chromium-{browser_id}"
-        try:
-            await configure_container(container_name, config)
-            print(f"Browser {browser_id} is configured.")
-            return "OK"
-        except Exception as e:
-            detail = f"Unable to configure browser {browser_id}!"
-            print(f"{detail} Exception={e}")
-            raise HTTPException(status_code=404, detail=detail)
-    return "OK"
 
 
 @app.get("/api/v1/suspend/{browser_id}")
