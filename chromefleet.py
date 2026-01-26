@@ -9,6 +9,7 @@ from datetime import datetime
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 TS_AUTHKEY = os.getenv("TS_AUTHKEY")
 CONTAINER_IMAGE = os.getenv("CONTAINER_IMAGE", "ghcr.io/remotebrowser/chromium-live")
@@ -332,6 +333,9 @@ async def suspend_browser(browser_id: str):
 @app.get("/api/v1/resume/{browser_id}")
 async def resume_browser(browser_id: str):
     raise HTTPException(status_code=501, detail="Not implemented")
+
+
+app.mount("/", StaticFiles(directory="webui", html=True), name="webui")
 
 
 if __name__ == "__main__":

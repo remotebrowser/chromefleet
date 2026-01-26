@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chrome Fleet</title>
+</head>
+
+<body>
+    <h1>Chrome Fleet</h1>
+    <p id="status">Loading...</p>
+    <table id="browsers-table"></table>
+    <script>
+        const $ = id => document.getElementById(id);
+
+        const listBrowsers = async () => {
+            const response = await fetch('/api/v1/browsers');
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return await response.json();
+        };
+
+        const getBrowser = async id => {
+            const response = await fetch(`/api/v1/browsers/${id}`);
+            const data = await response.json();
+            return data.ip_address ? data : null;
+        };
+
+        const linkify = address => `<a href="http://${address}" target="_blank">${address}</a>`;
+
+        const update = async () => {
+            try {
+                const browsers = await listBrowsers();
+                if (!Array.isArray(browsers)) {
+                    throw new Error('Invalid response: expected array of browsers');
+                }
+                const status = $('status');
+                status.textContent = browsers.length === 0 ? 'No browsers running!' : `${browsers.length} browser(s) running:`;
+                const table = $('browsers-table');
+                table.innerHTML = '';
+                browsers.forEach(browserId => {
+                    const row = document.createElement('tr');
+                    row.id = browserId;
+                    const idCell = document.createElement('td');
+                    idCell.textContent = browserId;
+                    row.appendChild(idCell);
+                    const ipCell = document.createElement('td');
+                    ipCell.textContent = '-';
+                    row.appendChild(ipCell);
+                    table.appendChild(row);
+                });
+                for (const id of browsers) {
+                    const browser = await getBrowser(id);
+                    const row = $(id);
+                    if (browser && row && row.cells[1]) {
+                        row.cells[1].innerHTML = linkify(browser.ip_address);
+                    }
+                }
+            } catch (error) {
+                console.error('Error fetching browsers:', error);
+                $('status').textContent = 'Error loading browsers';
+            }
+        };
+
+        document.addEventListener('DOMContentLoaded', () => {
+            update();
+            setInterval(update, 5000);
+        });
+    </script>
+</body>
+
+</html>
