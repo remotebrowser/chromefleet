@@ -41,3 +41,22 @@ jobs:
           context: .
           push: true
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+  test-published-container:
+    runs-on: ubuntu-22.04
+    needs: publish
+    timeout-minutes: 5
+
+    steps:
+      - name: Run the container
+        run: docker run -d --rm --name chromefleet -p 8300:8300 -e TS_AUTHKEY ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+
+      - name: Run the health check validation
+        run: while ! curl -s 'http://localhost:8300/health' | grep 'OK'; do sleep 1; done
+        timeout-minutes: 3
+
+      - name: Get the container logs
+        run: docker logs --details chromefleet
+        if: always()
