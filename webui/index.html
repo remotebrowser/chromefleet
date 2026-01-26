@@ -5,6 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chrome Fleet</title>
+    <script src="https://cdn.jsdelivr.net/npm/timeago.js@4/dist/timeago.min.js"></script>
 </head>
 
 <body>
@@ -30,6 +31,8 @@
 
         const linkify = address => `<a href="http://${address}" target="_blank">${address}</a>`;
 
+        const formatTimestamp = timestamp => timestamp ? timeago.format(new Date(timestamp * 1000)) : '-';
+
         const update = async () => {
             try {
                 const browsers = await listBrowsers();
@@ -49,6 +52,9 @@
                     const ipCell = document.createElement('td');
                     ipCell.textContent = '-';
                     row.appendChild(ipCell);
+                    const activityCell = document.createElement('td');
+                    activityCell.textContent = '-';
+                    row.appendChild(activityCell);
                     table.appendChild(row);
                 });
                 for (const id of browsers) {
@@ -56,6 +62,7 @@
                     const row = $(id);
                     if (browser && row && row.cells[1]) {
                         row.cells[1].innerHTML = linkify(browser.ip_address);
+                        row.cells[2].textContent = formatTimestamp(browser.last_activity_timestamp);
                     }
                 }
             } catch (error) {
@@ -66,7 +73,7 @@
 
         document.addEventListener('DOMContentLoaded', () => {
             update();
-            setInterval(update, 5000);
+            setInterval(update, 60 * 1000);
         });
     </script>
 </body>

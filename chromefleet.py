@@ -123,6 +123,23 @@ async def list_containers() -> list[str]:
         raise Exception(f"Unable to list all containers: {e}")
 
 
+async def get_container_last_activity(container_name: str) -> float | None:
+    try:
+        run_podman(["exec", container_name, "sh", "-c", "cp $HOME/chrome-profile/Default/History db"])
+
+        result = run_podman(["exec", container_name, "sqlite3", "db", "select MAX(last_visit_time) from urls;"])
+
+        if result.returncode == 0 and result.stdout:
+            chromium_time = float(result.stdout.strip())
+            unix_epoch = (chromium_time / 1_000_000) - 11644473600
+            return unix_epoch
+        return None
+    except subprocess.CalledProcessError:
+        return None
+    except Exception:
+        return None
+
+
 async def configure_container(container_name: str, config: dict[str, str]) -> None:
     ip = await get_tailscale_ip(container_name)
     print(f"Configuring container {container_name} with IP {ip} and config {config}...")
@@ -235,12 +252,13 @@ async def get_browser(browser_id: str):
         raise HTTPException(status_code=404, detail=detail)
     MAX_ATTEMPTS = 3
     for attempt in range(MAX_ATTEMPTS):
-        print(f"Getting Tailscale IP address for {container_name}: attempt {attempt + 1}/{MAX_ATTEMPTS}...")
+        print(f"Getting information for {container_name}: attempt {attempt + 1}/{MAX_ATTEMPTS}...")
         try:
             ip_address = await get_tailscale_ip(container_name)
             cdp_url = f"http://{ip_address}:9222"
+            last_activity_timestamp = await get_container_last_activity(container_name)
             print(f"Browser {browser_id}: ip_address={ip_address} cdp_url={cdp_url}.")
-            return {"ip_address": ip_address, "cdp_url": cdp_url}
+            return {"ip_address": ip_address, "cdp_url": cdp_url, "last_activity_timestamp": last_activity_timestamp}
         except Exception as e:
             await asyncio.sleep(1)
             if attempt + 1 == MAX_ATTEMPTS:
