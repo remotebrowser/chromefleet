@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 from datetime import datetime
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -140,7 +141,7 @@ async def get_container_last_activity(container_name: str) -> float | None:
         return None
 
 
-async def configure_container(container_name: str, config: dict[str, str]) -> None:
+async def configure_container(container_name: str, config: dict[str, Any]) -> None:
     ip = await get_tailscale_ip(container_name)
     print(f"Configuring container {container_name} with IP {ip} and config {config}...")
 
@@ -326,7 +327,7 @@ async def disconnect_browser(browser_id: str):
 
 
 @app.post("/api/v1/browsers/{browser_id}/configure")
-async def configure_browser(browser_id: str, config: dict[str, str]):
+async def configure_browser(browser_id: str, config: dict[str, Any]):
     print(f"Configuring browser {browser_id} with config {config}...")
     container_name = f"chromium-{browser_id}"
     if not await container_exists(container_name):
