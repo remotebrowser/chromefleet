@@ -2,6 +2,8 @@
 
 **Requirements:** [Podman](https://podman.io), [uv](https://docs.astral.sh/uv), and [TS_AUTHKEY env](https://tailscale.com/kb/1085/auth-keys).
 
+It is recommended that the TS_AUTHKEY is configured to be `ephemeral` so that the machines don't persist in the Tailscale admin console after they are deleted.
+
 ```bash
 export TS_AUTHKEY=your-tailscale-auth-key
 uv run chromefleet.py
