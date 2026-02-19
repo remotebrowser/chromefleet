@@ -73,12 +73,19 @@ async def launch_container(image_name: str, container_name: str) -> str:
         "--rm",
         "--name",
         container_name,
+    ]
+    # On macOS, Podman runs in a VM. This specific container image requires --privileged
+    # to correctly access system services (like DBus) and devices inside that VM.
+    if sys.platform == "darwin":
+        cmd.append("--privileged")
+
+    cmd.extend([
         "--cap-add=NET_ADMIN",
         "--cap-add=NET_RAW",
         "--device",
         "/dev/net/tun:/dev/net/tun",
         image_name,
-    ]
+    ])
     try:
         result = run_podman(cmd)
         if result.returncode == 0 and result.stdout:
