@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
+import urllib.request
+import websockets
 from datetime import datetime
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -352,6 +355,57 @@ async def suspend_browser(browser_id: str):
 @app.get("/api/v1/resume/{browser_id}")
 async def resume_browser(browser_id: str):
     raise HTTPException(status_code=501, detail="Not implemented")
+
+
+@app.websocket("/api/v1/ws/{host}")
+async def websocket_proxy(client_ws: WebSocket, host: str):
+    def fetch_debugger_url():
+        with urllib.request.urlopen(f"http://{host}:9222/json/version", timeout=10) as response:
+            data = json.loads(response.read().decode())
+            return data["webSocketDebuggerUrl"]
+
+    try:
+        remote_url = await asyncio.to_thread(fetch_debugger_url)
+    except Exception as e:
+        print(f"Failed to get debugger URL from {host}: {e}")
+        await client_ws.close()
+        return
+
+    await client_ws.accept()
+    print(f"Client connected, proxying to {remote_url}")
+
+    try:
+        async with websockets.connect(remote_url) as remote_ws:
+            print("Connected to remote WebSocket")
+            stop = asyncio.Event()
+
+            async def client_to_remote():
+                try:
+                    while not stop.is_set():
+                        data = await client_ws.receive_text()
+                        await remote_ws.send(data)
+                except (WebSocketDisconnect, Exception) as e:
+                    print(f"Client->Remote closed: {e}")
+                finally:
+                    stop.set()
+
+            async def remote_to_client():
+                try:
+                    async for message in remote_ws:
+                        if stop.is_set():
+                            break
+                        await client_ws.send_text(message if isinstance(message, str) else message.decode())
+                except Exception as e:
+                    print(f"Remote->Client closed: {e}")
+                finally:
+                    stop.set()
+
+            await asyncio.gather(client_to_remote(), remote_to_client(), return_exceptions=True)
+
+    except Exception as e:
+        print(f"Proxy error: {e}")
+    finally:
+        print("Connection closed")
 
 
 app.mount("/", StaticFiles(directory="webui", html=True), name="webui")
