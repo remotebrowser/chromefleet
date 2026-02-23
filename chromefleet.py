@@ -35,19 +35,52 @@ async def get_tailscale_ip(container_name: str) -> str:
         raise Exception(f"Unable to get Tailscale IP address for {container_name}: {e}")
 
 
+async def wait_for_tailscale_ip(container_name: str, timeout_sec: float = 45, poll_interval: float = 2) -> str:
+    """Wait until tailscale ip returns an address (e.g. after tailscale up)."""
+    deadline = asyncio.get_running_loop().time() + timeout_sec
+    while asyncio.get_running_loop().time() < deadline:
+        proc = _podman_exec_no_check(container_name, "tailscale ip")
+        if proc.returncode == 0 and (proc.stdout or "").strip():
+            return proc.stdout.strip().split("\n")[0]
+        await asyncio.sleep(poll_interval)
+    raise Exception(f"Tailscale did not get an IP for {container_name} within {timeout_sec}s")
+
+
+def _podman_exec_no_check(container_name: str, shell_cmd: str) -> subprocess.CompletedProcess[str]:
+    """Run a command in container without raising on non-zero exit."""
+    cmd = ["podman"]
+    if os.environ.get("CONTAINER_HOST"):
+        cmd.append("--remote")
+    cmd.extend(["exec", container_name, "sh", "-c", shell_cmd])
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+
+async def wait_for_tailscale_daemon(container_name: str, timeout_sec: float = 30, poll_interval: float = 2) -> bool:
+    """Wait until Tailscale daemon inside the container is ready to accept commands.
+    Daemon is ready when it responds; it may return exit 0 (logged in) or 1 (Logged out / NeedsLogin).
+    """
+    deadline = asyncio.get_running_loop().time() + timeout_sec
+    while asyncio.get_running_loop().time() < deadline:
+        proc = _podman_exec_no_check(container_name, "tailscale status")
+        out = (proc.stdout or "") + (proc.stderr or "")
+        if proc.returncode == 0 or "Logged out" in out or "NeedsLogin" in out or "Stopped" in out:
+            return True
+        await asyncio.sleep(poll_interval)
+    return False
+
+
 async def setup_tailscale(container_name: str) -> bool:
+    """Run tailscale up in the container. Returns True on success, raises Exception with stderr on failure."""
     try:
         cmd = f"sudo tailscale up --auth-key={TS_AUTHKEY} --hostname={container_name} --advertise-tags=tag:chromefleet"
         result = run_podman(["exec", container_name, "sh", "-c", cmd])
         if result.returncode != 0:
-            print(f"Failed to execute tailscale up: {result.stderr}")
-        return result.returncode == 0
+            msg = (result.stderr or result.stdout or "unknown").strip()
+            raise Exception(f"tailscale up failed: {msg}")
+        return True
     except subprocess.CalledProcessError as e:
-        print(f"Failed to execute tailscale up: {e.stderr}")
-        return False
-    except Exception as e:
-        print(f"Error setting up Tailscale: {e}")
-        return False
+        msg = (e.stderr or e.stdout or str(e)).strip()
+        raise Exception(f"tailscale up failed: {msg}")
 
 
 async def terminate_tailscale(container_name: str) -> bool:
@@ -225,10 +258,17 @@ async def create_browser(browser_id: str):
     container_name = f"chromium-{browser_id}"
     try:
         await launch_container(CONTAINER_IMAGE, container_name)
-        return await connect_browser_to_tailscale(browser_id)
     except Exception as e:
-        detail = f"Unable to start browser {browser_id}!"
-        print(f"{detail} Exception={e}")
+        detail = f"Unable to start browser {browser_id} (launch failed): {e}"
+        print(detail)
+        raise HTTPException(status_code=500, detail=detail)
+    try:
+        return await connect_browser_to_tailscale(browser_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        detail = f"Unable to start browser {browser_id} (Tailscale connect failed): {e}"
+        print(detail)
         raise HTTPException(status_code=500, detail=detail)
 
 
@@ -268,10 +308,10 @@ async def get_browser(browser_id: str):
             print(f"Browser {browser_id}: ip_address={ip_address} cdp_url={cdp_url}.")
             return {"ip_address": ip_address, "cdp_url": cdp_url, "last_activity_timestamp": last_activity_timestamp}
         except Exception as e:
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
             if attempt + 1 == MAX_ATTEMPTS:
-                detail = f"Unable to get Tailscale IP address for {container_name}!"
-                print(f"{detail} Exception={e}")
+                detail = f"Unable to get Tailscale IP address for {container_name}: {e}"
+                print(detail)
                 raise HTTPException(status_code=500, detail=detail)
 
 
@@ -296,17 +336,28 @@ async def connect_browser_to_tailscale(browser_id: str):
         print(detail)
         raise HTTPException(status_code=404, detail=detail)
     try:
-        MAX_ATTEMPTS = 3
-        for attempt in range(MAX_ATTEMPTS):
-            await asyncio.sleep(1)
-            print(f"Setting up Tailscale for {container_name}: attempt {attempt + 1}/{MAX_ATTEMPTS}...")
-            if await setup_tailscale(container_name):
-                print(f"Browser {browser_id} is connected to Tailscale.")
-                return await get_browser(browser_id)
-        raise Exception(f"Unable to setup Tailscale after {MAX_ATTEMPTS}!")
+        if not await wait_for_tailscale_daemon(container_name, timeout_sec=30, poll_interval=2):
+            raise Exception("Tailscale daemon did not become ready in time")
+        MAX_SETUP_ATTEMPTS = 3
+        last_error: Exception | None = None
+        for attempt in range(MAX_SETUP_ATTEMPTS):
+            if attempt > 0:
+                await asyncio.sleep(3)
+            print(f"Setting up Tailscale for {container_name}: attempt {attempt + 1}/{MAX_SETUP_ATTEMPTS}...")
+            try:
+                if await setup_tailscale(container_name):
+                    await wait_for_tailscale_ip(container_name, timeout_sec=45, poll_interval=2)
+                    return await get_browser(browser_id)
+            except Exception as e:
+                last_error = e
+        raise Exception(
+            f"Unable to setup Tailscale after {MAX_SETUP_ATTEMPTS} attempts" + (f": {last_error}" if last_error else "")
+        )
+    except HTTPException:
+        raise
     except Exception as e:
-        detail = f"Unable to connect browser {browser_id} to Tailscale!"
-        print(f"{detail} Exception={e}")
+        detail = f"Unable to connect browser {browser_id} to Tailscale: {e}"
+        print(detail)
         raise HTTPException(status_code=500, detail=detail)
 
 
