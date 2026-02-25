@@ -26,8 +26,7 @@
 
         const getBrowser = async id => {
             const response = await fetch(`/api/v1/browsers/${id}`);
-            const data = await response.json();
-            return data.ip_address ? data : null;
+            return await response.json();
         };
 
         const formatTimestamp = timestamp => timestamp ? timeago.format(new Date(timestamp * 1000)) : '-';
@@ -47,35 +46,26 @@
                     container.style.padding = '10px';
                     container.id = browserId;
 
-                    const infoDiv = document.createElement('div');
-                    infoDiv.style.marginBottom = '10px';
-
-                    const nameSpan = document.createElement('span');
-                    nameSpan.textContent = `${browserId} `;
-                    nameSpan.style.fontWeight = 'bold';
-                    infoDiv.appendChild(nameSpan);
-
-                    const ipSpan = document.createElement('a');
-                    ipSpan.textContent = '';
-                    ipSpan.id = `${browserId}-ip`;
-                    ipSpan.style.color = '#0066cc';
-                    ipSpan.target = '_blank';
-                    infoDiv.appendChild(ipSpan);
+                    const nameLink = document.createElement('a');
+                    nameLink.textContent = browserId;
+                    nameLink.href = `/live/${browserId}`;
+                    nameLink.target = '_blank';
+                    nameLink.style.fontWeight = 'bold';
+                    container.appendChild(nameLink);
 
                     const activitySpan = document.createElement('span');
-                    activitySpan.textContent = '';
                     activitySpan.id = `${browserId}-activity`;
                     activitySpan.style.fontSize = '0.8em';
                     activitySpan.style.color = '#666';
-                    activitySpan.style.marginLeft = '10px';
-                    infoDiv.appendChild(activitySpan);
+                    activitySpan.style.marginLeft = '16px';
+                    container.appendChild(activitySpan);
 
                     const iframe = document.createElement('iframe');
-                    iframe.src = 'about:blank';
+                    iframe.src = `/live/${browserId}`;
                     iframe.style.width = '100%';
                     iframe.style.aspectRatio = '16 / 9';
                     iframe.style.border = '1px solid #888';
-                    iframe.id = `${browserId}-iframe`;
+                    iframe.style.marginTop = '8px';
 
                     const iframeContainer = document.createElement('div');
                     iframeContainer.style.position = 'relative';
@@ -93,27 +83,14 @@
                     iframeContainer.appendChild(iframe);
                     iframeContainer.appendChild(overlay);
 
-                    container.appendChild(infoDiv);
                     container.appendChild(iframeContainer);
                     grid.appendChild(container);
                 });
                 for (const id of browsers) {
                     const browser = await getBrowser(id);
-                    const container = $(id);
-                    if (browser && container) {
-                        const ipSpan = $(`${id}-ip`);
-                        const activitySpan = $(`${id}-activity`);
-                        const iframe = $(`${id}-iframe`);
-                        if (ipSpan) {
-                            ipSpan.textContent = ` (${browser.ip_address})`;
-                            ipSpan.href = `http://${browser.ip_address}`;
-                        }
-                        if (activitySpan) {
-                            activitySpan.textContent = ` ${formatTimestamp(browser.last_activity_timestamp)}`;
-                        }
-                        if (iframe) {
-                            iframe.src = `http://${browser.ip_address}`;
-                        }
+                    const activitySpan = $(`${id}-activity`);
+                    if (browser && activitySpan) {
+                        activitySpan.textContent = formatTimestamp(browser.last_activity_timestamp);
                     }
                 }
             } catch (error) {
@@ -124,7 +101,6 @@
 
         document.addEventListener('DOMContentLoaded', () => {
             update();
-            setInterval(update, 60 * 1000);
         });
     </script>
 </body>
