@@ -1,11 +1,8 @@
 # Chrome Fleet
 
-**Requirements:** [Podman](https://podman.io), [uv](https://docs.astral.sh/uv), and [TS_AUTHKEY env](https://tailscale.com/kb/1085/auth-keys).
-
-It is recommended that the TS_AUTHKEY is configured to be `ephemeral` so that the machines don't persist in the Tailscale admin console after they are deleted.
+**Requirements:** [Podman](https://podman.io) and [uv](https://docs.astral.sh/uv).
 
 ```bash
-export TS_AUTHKEY=your-tailscale-auth-key
 uv run chromefleet.py
 ```
 
@@ -15,12 +12,12 @@ For Dokku deployment, see the [deployment guide](deploy-dokku.md).
 
 ### Start a new browser
 
-`POST /api/v1/browsers/{browser_id}` creates a new browser with the specified `browser_id`. The browser runs in a container connected to Tailscale using `TS_AUTHKEY` and returns the Tailscale IP address and CDP URL.
+`POST /api/v1/browsers/{browser_id}` creates a new browser with the specified `browser_id`. The browser runs in a container. 
 
-_Example_: `curl -X POST localhost:8300/api/v1/browsers/xyz123` creates a container named `chromium-xyz123` (visible in the Tailscale admin console) and returns:
+_Example_: `curl -X POST localhost:8300/api/v1/browsers/xyz123` creates a container named `chromium-xyz123` and returns:
 
 ```json
-{ "ip_address": "100.6.7.8", "cdp_url": "http://100.6.7.8:9222" }
+{ "container_name": "chromium-xyz123", "status": "created" }
 ```
 
 ### Stop a browser
@@ -35,12 +32,12 @@ _Example_: `curl -X DELETE localhost:8300/api/v1/browsers/xyz123` terminates the
 
 ### Query a browser
 
-`GET /api/v1/browsers/{browser_id}` returns information about the browser with the specified `browser_id`, including its Tailscale IP address and CDP URL. Returns HTTP 404 if the browser is not found.
+`GET /api/v1/browsers/{browser_id}` returns information about the browser with the specified `browser_id`. Returns HTTP 404 if the browser is not found.
 
 _Example_: `curl localhost:8300/api/v1/browsers/xyz123` returns:
 
 ```json
-{ "ip_address": "100.6.7.8", "cdp_url": "http://100.6.7.8:9222" }
+{ "last_activity_timestamp": 1772069081 }
 ```
 
 ### List all browsers
@@ -51,28 +48,6 @@ _Example_: `curl localhost:8300/api/v1/browsers` returns:
 
 ```json
 ["xyz123", "abc234"]
-```
-
-### Connect via Tailscale
-
-`POST /api/v1/browsers/{browser_id}/connect` connects the container running the specified browser to Tailscale using `TS_AUTHKEY` and returns the Tailscale IP address and CDP URL.
-
-This endpoint is useful when a container becomes disconnected from Tailscale. Note that new browsers are always started with an active Tailscale connection.
-
-_Example_: `curl -X POST localhost:8300/api/v1/browsers/xyz123/connect` connects the browser via Tailscale as `chromium-xyz123` (visible in the Tailscale admin console) and returns:
-
-```json
-{ "ip_address": "100.6.7.8", "cdp_url": "http://100.6.7.8:9222" }
-```
-
-### Disconnect from Tailscale
-
-`POST /api/v1/browsers/{browser_id}/disconnect` disconnects the container running the specified browser from Tailscale.
-
-_Example_: `curl -X POST localhost:8300/api/v1/browsers/xyz123/disconnect` disconnects browser `xyz123` (identified as `chromium-xyz123` in the Tailscale admin console) and returns:
-
-```json
-{ "status": "disconnected" }
 ```
 
 ### Configure a browser
