@@ -428,6 +428,59 @@ async def find_browser_id(page_id: str) -> str | None:
     return None
 
 
+async def websocket_proxy(client_ws: WebSocket, remote_url: str):
+    try:
+        async with websockets.connect(
+            remote_url, ping_interval=60, ping_timeout=30, close_timeout=7200, max_size=10 * 1024 * 1024
+        ) as remote_ws:
+            print("[CDP] Connected to remote WebSocket")
+
+            async def client_to_remote():
+                try:
+                    while True:
+                        message = await client_ws.receive_text()
+                        await remote_ws.send(message)
+                except (WebSocketDisconnect, RuntimeError):
+                    print("[CDP] Client disconnected")
+                except Exception as e:
+                    print(f"[CDP] client_to_remote error: {type(e).__name__}: {e}")
+
+            async def remote_to_client():
+                try:
+                    async for message in remote_ws:
+                        if client_ws.client_state == WebSocketState.CONNECTED:
+                            await client_ws.send_text(message if isinstance(message, str) else message.decode())
+                        else:
+                            print("[CDP] Client not connected, breaking")
+                            break
+                except ConnectionClosed as e:
+                    print(f"[CDP] Remote disconnected: code={e.code} reason={e.reason}")
+                except Exception as e:
+                    print(f"[CDP] remote_to_client error: {type(e).__name__}: {e}")
+
+            tasks = [
+                asyncio.create_task(client_to_remote()),
+                asyncio.create_task(remote_to_client()),
+            ]
+            _, pending = await asyncio.wait(tasks, return_when=asyncio.ALL_COMPLETED)
+
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+    except OSError as e:
+        print(f"[CDP] Could not connect to remote: {e}")
+        if client_ws.client_state == WebSocketState.CONNECTED:
+            await client_ws.close(code=4502, reason="Remote server unreachable")
+    except Exception as e:
+        print(f"[CDP] Unexpected error: {type(e).__name__}: {e}")
+        if client_ws.client_state == WebSocketState.CONNECTED:
+            await client_ws.close(code=4500, reason="Internal proxy error")
+
+
 @app.websocket("/cdp/{browser_id}")
 async def cdp_browser_websocket_proxy(client_ws: WebSocket, browser_id: str):
     print(f"[CDP] Entered cdp_browser_websocket_proxy for browser_id={browser_id}")
@@ -450,71 +503,7 @@ async def cdp_browser_websocket_proxy(client_ws: WebSocket, browser_id: str):
         return
 
     print(f"[CDP] Client connected, proxying to {remote_url}")
-
-    try:
-        print("[CDP] Connecting to remote websocket...")
-        async with websockets.connect(
-            remote_url, ping_interval=60, ping_timeout=30, close_timeout=7200, max_size=10 * 1024 * 1024
-        ) as remote_ws:
-            print("[CDP] Connected to remote WebSocket")
-
-            async def client_to_remote():
-                print("[CDP] client_to_remote task started")
-                try:
-                    while True:
-                        message = await client_ws.receive_text()
-                        print(f"[CDP] client->remote: {message[:100]}...")
-                        await remote_ws.send(message)
-                except (WebSocketDisconnect, RuntimeError) as e:
-                    print(f"[CDP] Client disconnected (client->remote): {e}")
-                except Exception as e:
-                    print(f"[CDP] client_to_remote error: {type(e).__name__}: {e}")
-
-            async def remote_to_client():
-                print("[CDP] remote_to_client task started")
-                try:
-                    async for message in remote_ws:
-                        print(f"[CDP] remote->client: {message[:100]}...")
-                        if client_ws.client_state == WebSocketState.CONNECTED:
-                            await client_ws.send_text(message if isinstance(message, str) else message.decode())
-                        else:
-                            print(f"[CDP] Client state is {client_ws.client_state}, breaking")
-                            break
-                except ConnectionClosed as e:
-                    print(f"[CDP] Remote disconnected (remote->client): {e}")
-                except Exception as e:
-                    print(f"[CDP] remote_to_client error: {type(e).__name__}: {e}")
-                finally:
-                    try:
-                        if client_ws.client_state == WebSocketState.CONNECTED:
-                            print("[CDP] Closing client websocket in finally")
-                            await client_ws.close()
-                    except Exception as e:
-                        print(f"[CDP] Error closing client ws in finally: {e}")
-
-            tasks = [
-                asyncio.create_task(client_to_remote()),
-                asyncio.create_task(remote_to_client()),
-            ]
-            print("[CDP] Waiting for tasks...")
-            _, pending = await asyncio.wait(tasks, return_when=asyncio.ALL_COMPLETED)
-            print(f"[CDP] Both tasks completed, {len(pending)} pending")
-
-            for task in pending:
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception) as e:
-                    print(f"[CDP] Cancelled pending task: {type(e).__name__}")
-
-    except OSError as e:
-        print(f"[CDP] Could not connect to remote WebSocket at {remote_url}: {e}")
-        if client_ws.client_state == WebSocketState.CONNECTED:
-            await client_ws.close(code=4502, reason="Remote server unreachable")
-    except Exception as e:
-        print(f"[CDP] Unexpected error in WebSocket proxy: {type(e).__name__}: {e}")
-        if client_ws.client_state == WebSocketState.CONNECTED:
-            await client_ws.close(code=4500, reason="Internal proxy error")
+    await websocket_proxy(client_ws, remote_url)
     print("[CDP] cdp_browser_websocket_proxy exiting")
 
 
@@ -550,60 +539,7 @@ async def cdp_devtools_websocket_proxy(client_ws: WebSocket, path: str):
         return
 
     print(f"[CDP] Connecting to {remote_url}")
-
-    try:
-        async with websockets.connect(
-            remote_url, ping_interval=60, ping_timeout=30, close_timeout=7200, max_size=10 * 1024 * 1024
-        ) as remote_ws:
-            print("[CDP] Connected to remote WebSocket")
-
-            async def client_to_remote():
-                try:
-                    while True:
-                        message = await client_ws.receive_text()
-                        await remote_ws.send(message)
-                except (WebSocketDisconnect, RuntimeError):
-                    print("[CDP] Client disconnected")
-                except Exception as e:
-                    print(f"[CDP] client_to_remote error: {type(e).__name__}: {e}")
-
-            async def remote_to_client():
-                try:
-                    count = 0
-                    async for message in remote_ws:
-                        count += 1
-                        if client_ws.client_state == WebSocketState.CONNECTED:
-                            await client_ws.send_text(message if isinstance(message, str) else message.decode())
-                        else:
-                            print(f"[CDP] Client not connected, breaking (received {count} messages)")
-                            break
-                    print(f"[CDP] remote_to_client loop ended (received {count} messages)")
-                except ConnectionClosed as e:
-                    print(f"[CDP] Remote disconnected: code={e.code} reason={e.reason}")
-                except Exception as e:
-                    print(f"[CDP] remote_to_client error: {type(e).__name__}: {e}")
-
-            tasks = [
-                asyncio.create_task(client_to_remote()),
-                asyncio.create_task(remote_to_client()),
-            ]
-            _, pending = await asyncio.wait(tasks, return_when=asyncio.ALL_COMPLETED)
-
-            for task in pending:
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
-
-    except OSError as e:
-        print(f"[CDP] Could not connect to remote: {e}")
-        if client_ws.client_state == WebSocketState.CONNECTED:
-            await client_ws.close(code=4502, reason="Remote server unreachable")
-    except Exception as e:
-        print(f"[CDP] Unexpected error: {type(e).__name__}: {e}")
-        if client_ws.client_state == WebSocketState.CONNECTED:
-            await client_ws.close(code=4500, reason="Internal proxy error")
+    await websocket_proxy(client_ws, remote_url)
     print("[CDP] cdp_devtools_websocket_proxy exiting")
 
 
