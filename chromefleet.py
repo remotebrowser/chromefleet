@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
+import urllib.request
+import websockets
 from datetime import datetime
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.websockets import WebSocketState
+from websockets.exceptions import ConnectionClosed
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -359,6 +364,247 @@ async def suspend_browser(browser_id: str):
 @app.get("/api/v1/resume/{browser_id}")
 async def resume_browser(browser_id: str):
     raise HTTPException(status_code=501, detail="Not implemented")
+
+
+async def get_cdp_url(browser_id: str) -> str:
+    container_name = f"chromium-{browser_id}"
+    ip_address = await get_tailscale_ip(container_name)
+    return f"http://{ip_address}:9222"
+
+
+async def get_cdp_websocket_url(browser_id: str) -> str:
+    cdp_url = await get_cdp_url(browser_id)
+
+    def fetch():
+        with urllib.request.urlopen(f"{cdp_url}/json/version", timeout=10) as response:
+            data = json.loads(response.read().decode())
+            print(f"[CDP] CDP json version gives {data}")
+            return data["webSocketDebuggerUrl"]
+
+    return await asyncio.to_thread(fetch)
+
+
+async def get_page_websocket_url(browser_id: str, page_id: str) -> str | None:
+    try:
+        cdp_url = await get_cdp_url(browser_id)
+
+        def fetch():
+            with urllib.request.urlopen(f"{cdp_url}/json/list", timeout=10) as response:
+                data = json.loads(response.read().decode())
+                for item in data:
+                    if item.get("id") == page_id:
+                        return item.get("webSocketDebuggerUrl")
+                return None
+
+        return await asyncio.to_thread(fetch)
+    except Exception as e:
+        print(f"[CDP] Error getting page websocket URL for {browser_id}/{page_id}: {e}")
+        return None
+
+
+async def get_page_list(browser_id: str) -> list[str]:
+    try:
+        cdp_url = await get_cdp_url(browser_id)
+
+        def fetch():
+            with urllib.request.urlopen(f"{cdp_url}/json/list", timeout=10) as response:
+                data = json.loads(response.read().decode())
+                return [item["id"] for item in data]
+
+        return await asyncio.to_thread(fetch)
+    except Exception as e:
+        print(f"[CDP] Error getting page list for {browser_id}: {e}")
+        return []
+
+
+async def find_browser_id(page_id: str) -> str | None:
+    containers = await list_containers()
+    for container in [c for c in containers if c.startswith("chromium-")]:
+        browser_id = container.replace("chromium-", "")
+        page_ids = await get_page_list(browser_id)
+        if page_id in page_ids:
+            return browser_id
+
+    return None
+
+
+@app.websocket("/cdp/{browser_id}")
+async def cdp_browser_websocket_proxy(client_ws: WebSocket, browser_id: str):
+    print(f"[CDP] Entered cdp_browser_websocket_proxy for browser_id={browser_id}")
+    container_name = f"chromium-{browser_id}"
+
+    await client_ws.accept()
+    print("[CDP] WebSocket accepted")
+
+    if not await container_exists(container_name):
+        print(f"[CDP] Container {container_name} not found")
+        await client_ws.close(code=1008)
+        return
+
+    try:
+        remote_url = await get_cdp_websocket_url(browser_id)
+        print(f"[CDP] Got remote URL: {remote_url}")
+    except Exception as e:
+        print(f"[CDP] Failed to get debugger URL from {browser_id}: {e}")
+        await client_ws.close(code=4502, reason="Failed to get debugger URL")
+        return
+
+    print(f"[CDP] Client connected, proxying to {remote_url}")
+
+    try:
+        print("[CDP] Connecting to remote websocket...")
+        async with websockets.connect(
+            remote_url, ping_interval=60, ping_timeout=30, close_timeout=7200, max_size=10 * 1024 * 1024
+        ) as remote_ws:
+            print("[CDP] Connected to remote WebSocket")
+
+            async def client_to_remote():
+                print("[CDP] client_to_remote task started")
+                try:
+                    while True:
+                        message = await client_ws.receive_text()
+                        print(f"[CDP] client->remote: {message[:100]}...")
+                        await remote_ws.send(message)
+                except (WebSocketDisconnect, RuntimeError) as e:
+                    print(f"[CDP] Client disconnected (client->remote): {e}")
+                except Exception as e:
+                    print(f"[CDP] client_to_remote error: {type(e).__name__}: {e}")
+
+            async def remote_to_client():
+                print("[CDP] remote_to_client task started")
+                try:
+                    async for message in remote_ws:
+                        print(f"[CDP] remote->client: {message[:100]}...")
+                        if client_ws.client_state == WebSocketState.CONNECTED:
+                            await client_ws.send_text(message if isinstance(message, str) else message.decode())
+                        else:
+                            print(f"[CDP] Client state is {client_ws.client_state}, breaking")
+                            break
+                except ConnectionClosed as e:
+                    print(f"[CDP] Remote disconnected (remote->client): {e}")
+                except Exception as e:
+                    print(f"[CDP] remote_to_client error: {type(e).__name__}: {e}")
+                finally:
+                    try:
+                        if client_ws.client_state == WebSocketState.CONNECTED:
+                            print("[CDP] Closing client websocket in finally")
+                            await client_ws.close()
+                    except Exception as e:
+                        print(f"[CDP] Error closing client ws in finally: {e}")
+
+            tasks = [
+                asyncio.create_task(client_to_remote()),
+                asyncio.create_task(remote_to_client()),
+            ]
+            print("[CDP] Waiting for tasks...")
+            _, pending = await asyncio.wait(tasks, return_when=asyncio.ALL_COMPLETED)
+            print(f"[CDP] Both tasks completed, {len(pending)} pending")
+
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception) as e:
+                    print(f"[CDP] Cancelled pending task: {type(e).__name__}")
+
+    except OSError as e:
+        print(f"[CDP] Could not connect to remote WebSocket at {remote_url}: {e}")
+        if client_ws.client_state == WebSocketState.CONNECTED:
+            await client_ws.close(code=4502, reason="Remote server unreachable")
+    except Exception as e:
+        print(f"[CDP] Unexpected error in WebSocket proxy: {type(e).__name__}: {e}")
+        if client_ws.client_state == WebSocketState.CONNECTED:
+            await client_ws.close(code=4500, reason="Internal proxy error")
+    print("[CDP] cdp_browser_websocket_proxy exiting")
+
+
+@app.websocket("/devtools/{path:path}")
+async def cdp_devtools_websocket_proxy(client_ws: WebSocket, path: str):
+    print(f"[CDP] Entered cdp_devtools_websocket_proxy for path={path}")
+    await client_ws.accept()
+    print("[CDP] WebSocket accepted")
+
+    parts = path.split("/")
+    page_id = parts[-1] if parts else None
+    if not page_id:
+        print("[CDP] No page_id in path")
+        await client_ws.close(code=4000, reason="No page_id in path")
+        return
+
+    print(f"[CDP] Looking for page_id={page_id}")
+
+    browser_id = await find_browser_id(page_id)
+    if not browser_id:
+        print(f"[CDP] Page {page_id} not found in any browser")
+        await client_ws.close(code=4000, reason="Page not found in any browser")
+        return
+
+    container_name = f"chromium-{browser_id}"
+    ip_address = await get_tailscale_ip(container_name)
+    print(f"[CDP] Found page {page_id} in browser {browser_id}, IP: {ip_address}")
+
+    remote_url = await get_page_websocket_url(browser_id, page_id)
+    if not remote_url:
+        print(f"[CDP] Could not get websocket URL for page {page_id}")
+        await client_ws.close(code=4502, reason="Failed to get page websocket URL")
+        return
+
+    print(f"[CDP] Connecting to {remote_url}")
+
+    try:
+        async with websockets.connect(
+            remote_url, ping_interval=60, ping_timeout=30, close_timeout=7200, max_size=10 * 1024 * 1024
+        ) as remote_ws:
+            print("[CDP] Connected to remote WebSocket")
+
+            async def client_to_remote():
+                try:
+                    while True:
+                        message = await client_ws.receive_text()
+                        await remote_ws.send(message)
+                except (WebSocketDisconnect, RuntimeError):
+                    print("[CDP] Client disconnected")
+                except Exception as e:
+                    print(f"[CDP] client_to_remote error: {type(e).__name__}: {e}")
+
+            async def remote_to_client():
+                try:
+                    count = 0
+                    async for message in remote_ws:
+                        count += 1
+                        if client_ws.client_state == WebSocketState.CONNECTED:
+                            await client_ws.send_text(message if isinstance(message, str) else message.decode())
+                        else:
+                            print(f"[CDP] Client not connected, breaking (received {count} messages)")
+                            break
+                    print(f"[CDP] remote_to_client loop ended (received {count} messages)")
+                except ConnectionClosed as e:
+                    print(f"[CDP] Remote disconnected: code={e.code} reason={e.reason}")
+                except Exception as e:
+                    print(f"[CDP] remote_to_client error: {type(e).__name__}: {e}")
+
+            tasks = [
+                asyncio.create_task(client_to_remote()),
+                asyncio.create_task(remote_to_client()),
+            ]
+            _, pending = await asyncio.wait(tasks, return_when=asyncio.ALL_COMPLETED)
+
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+    except OSError as e:
+        print(f"[CDP] Could not connect to remote: {e}")
+        if client_ws.client_state == WebSocketState.CONNECTED:
+            await client_ws.close(code=4502, reason="Remote server unreachable")
+    except Exception as e:
+        print(f"[CDP] Unexpected error: {type(e).__name__}: {e}")
+        if client_ws.client_state == WebSocketState.CONNECTED:
+            await client_ws.close(code=4500, reason="Internal proxy error")
+    print("[CDP] cdp_devtools_websocket_proxy exiting")
 
 
 app.mount("/", StaticFiles(directory="webui", html=True), name="webui")
