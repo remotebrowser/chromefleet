@@ -15,7 +15,7 @@ ENV UV_FROZEN=1
 RUN uv sync --no-dev --no-install-workspace
 
 COPY chromefleet.py /app/chromefleet.py
-COPY webui/index.html /app/webui/
+COPY webui/* /app/webui/
 RUN uv sync --no-dev
 
 ENV PATH="/app/.venv/bin:$PATH"

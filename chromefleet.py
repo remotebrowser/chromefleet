@@ -11,10 +11,10 @@ from datetime import datetime
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.websockets import WebSocketState
 from websockets.exceptions import ConnectionClosed
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 TS_AUTHKEY = os.getenv("TS_AUTHKEY")
@@ -541,6 +541,73 @@ async def cdp_devtools_websocket_proxy(client_ws: WebSocket, path: str):
     print(f"[CDP] Connecting to {remote_url}")
     await websocket_proxy(client_ws, remote_url)
     print("[CDP] cdp_devtools_websocket_proxy exiting")
+
+
+@app.get("/live/{browser_id}")
+async def vnc_live_viewer(browser_id: str, request: Request):
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>{browser_id} - Live View</title>
+        <style>
+            body {{ margin: 0; background: #000; }}
+            #screen {{ width: 100vw; height: 100vh; }}
+        </style>
+    </head>
+    <body>
+        <div id="screen"></div>
+        <script type="module">
+            import RFB from '/rfb.bundle.js';
+
+            const rfb = new RFB(
+                document.getElementById('screen'),
+                'ws://{request.headers["host"]}/websockify/{browser_id}'
+            );
+            rfb.scaleViewport = true;
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(html)
+
+
+@app.websocket("/websockify/{browser_id}")
+async def websockify_proxy(websocket: WebSocket, browser_id: str):
+    container_name = f"chromium-{browser_id}"
+    target_ip = await get_tailscale_ip(container_name)
+    if not target_ip:
+        await websocket.close()
+        return
+
+    await websocket.accept(subprotocol="binary")
+
+    try:
+        reader, writer = await asyncio.open_connection(target_ip, 5900)
+    except Exception:
+        await websocket.close()
+        return
+
+    async def ws_to_vnc():
+        try:
+            while True:
+                data = await websocket.receive_bytes()
+                writer.write(data)
+                await writer.drain()
+        except Exception:
+            writer.close()
+
+    async def vnc_to_ws():
+        try:
+            while True:
+                data = await reader.read(4096)
+                if not data:
+                    break
+                await websocket.send_bytes(data)
+        except Exception:
+            pass
+
+    await asyncio.gather(ws_to_vnc(), vnc_to_ws())
 
 
 app.mount("/", StaticFiles(directory="webui", html=True), name="webui")
