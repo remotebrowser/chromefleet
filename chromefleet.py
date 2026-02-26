@@ -152,8 +152,9 @@ async def configure_container(container_name: str, config: dict[str, Any]) -> No
             run_podman([
                 "exec",
                 container_name,
-                "pkill",
-                "tinyproxy",
+                "sh",
+                "-c",
+                "pkill tinyproxy || true",
             ])
             run_podman([
                 "exec",
