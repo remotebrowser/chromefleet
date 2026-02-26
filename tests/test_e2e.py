@@ -94,7 +94,9 @@ class TestBrowserConfiguration:
         for _ in range(10):
             response = client.get("/api/v1/browsers/test06")
             if response.status_code == 200:
+                print(f"Browser ready: {response.json()}")
                 break
+            print(f"Browser not ready (status {response.status_code}), waiting...")
             time.sleep(3)
         response = client.post(
             "/api/v1/browsers/test06/configure",

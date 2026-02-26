@@ -29,6 +29,6 @@ jobs:
         timeout-minutes: 3
 
       - name: Run E2E tests
-        run: uv run pytest tests/ -v
+        run: uv run pytest tests/ -v -s
         env:
           CHROMEFLEET_URL: http://localhost:8300
