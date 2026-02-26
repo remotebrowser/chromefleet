@@ -1,4 +1,5 @@
 import os
+import time
 
 import httpx
 import pytest
@@ -90,6 +91,11 @@ class TestBrowserConfiguration:
     def test_configure_browser(self, client):
         client.post("/api/v1/browsers/test06")
         self.browser_ids.append("test06")
+        for _ in range(10):
+            response = client.get("/api/v1/browsers/test06")
+            if response.status_code == 200:
+                break
+            time.sleep(3)
         response = client.post(
             "/api/v1/browsers/test06/configure",
             json={"proxy_url": "http://proxy.example.com:8080"},
