@@ -23,8 +23,6 @@ jobs:
 
       - name: Run chromefleet
         run: uv run chromefleet.py &
-        env:
-          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
 
       - name: Wait for health check
         run: while ! curl -s 'http://localhost:8300/health' | grep 'OK'; do sleep 1; done

@@ -62,11 +62,6 @@ dokku docker-options:add chromefleet deploy "--device=/dev/net/tun:/dev/net/tun"
 dokku docker-options:add chromefleet deploy,run "-v /run/podman.sock:/run/podman.sock"
 ```
 
-Obtain the auth key from the [Tailscale admin console](https://login.tailscale.com/admin/machines/new-linux) and set it:
-```
-dokku config:set chromefleet TS_AUTHKEY=your-tailscale-auth-key
-```
-
 Set the domain (optional):
 ```
 dokku domains:set chromefleet chromefleet.example.com
