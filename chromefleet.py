@@ -545,6 +545,9 @@ async def cdp_devtools_websocket_proxy(client_ws: WebSocket, path: str):
 
 @app.get("/live/{browser_id}")
 async def vnc_live_viewer(browser_id: str, request: Request):
+    forwarded_scheme = request.headers.get("x-forwarded-scheme", "")
+    scheme = forwarded_scheme if forwarded_scheme else request.url.scheme
+    ws_scheme = "wss" if scheme == "https" else "ws"
     html = f"""
     <!DOCTYPE html>
     <html>
@@ -562,7 +565,7 @@ async def vnc_live_viewer(browser_id: str, request: Request):
 
             const rfb = new RFB(
                 document.getElementById('screen'),
-                'ws://{request.headers["host"]}/websockify/{browser_id}'
+                '{ws_scheme}://{request.headers["host"]}/websockify/{browser_id}'
             );
             rfb.scaleViewport = true;
         </script>
