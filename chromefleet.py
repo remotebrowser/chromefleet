@@ -17,7 +17,6 @@ from websockets.exceptions import ConnectionClosed
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-TS_AUTHKEY = os.getenv("TS_AUTHKEY")
 CONTAINER_IMAGE = os.getenv("CONTAINER_IMAGE", "ghcr.io/remotebrowser/chromium-live")
 
 
@@ -29,45 +28,16 @@ def run_podman(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, check=True, encoding="utf-8", errors="replace")
 
 
-async def get_tailscale_ip(container_name: str) -> str:
+async def get_host_port(container_name: str, container_port: int) -> int | None:
     try:
-        result = run_podman(["exec", container_name, "sh", "-c", "tailscale ip"])
-        if result.returncode == 0 and result.stdout:
-            ip_address = result.stdout.strip().split("\n")[0]
-            return ip_address
-        raise Exception(f"Unable to get Tailscale IP address for {container_name}")
-    except subprocess.CalledProcessError as e:
-        raise Exception(f"Unable to get Tailscale IP address for {container_name}: {e}")
-
-
-async def setup_tailscale(container_name: str) -> bool:
-    try:
-        cmd = f"sudo tailscale up --auth-key={TS_AUTHKEY} --hostname={container_name} --advertise-tags=tag:chromefleet"
-        result = run_podman(["exec", container_name, "sh", "-c", cmd])
-        if result.returncode != 0:
-            print(f"Failed to execute tailscale up: {result.stderr}")
-        return result.returncode == 0
-    except subprocess.CalledProcessError as e:
-        print(f"Failed to execute tailscale up: {e.stderr}")
-        return False
-    except Exception as e:
-        print(f"Error setting up Tailscale: {e}")
-        return False
-
-
-async def terminate_tailscale(container_name: str) -> bool:
-    try:
-        cmd = "sudo tailscale logout"
-        result = run_podman(["exec", container_name, "sh", "-c", cmd])
-        if result.returncode != 0:
-            print(f"Failed to execute tailscale logout: {result.stderr}")
-        return result.returncode == 0
-    except subprocess.CalledProcessError as e:
-        print(f"Failed to execute tailscale logout: {e.stderr}")
-        return False
-    except Exception as e:
-        print(f"Error terminating Tailscale: {e}")
-        return False
+        result = run_podman(["port", container_name, str(container_port)])
+        port_mapping = result.stdout.strip()
+        if not port_mapping:
+            return None
+        host_port = int(port_mapping.split(":")[-1])
+        return host_port
+    except subprocess.CalledProcessError:
+        return None
 
 
 async def launch_container(image_name: str, container_name: str) -> str:
@@ -85,17 +55,19 @@ async def launch_container(image_name: str, container_name: str) -> str:
         cmd.append("--privileged")
 
     cmd.extend([
-        "--cap-add=NET_ADMIN",
-        "--cap-add=NET_RAW",
-        "--device",
-        "/dev/net/tun:/dev/net/tun",
+        "-p",
+        "9222",
+        "-p",
+        "5900",
         image_name,
     ])
     try:
         result = run_podman(cmd)
         if result.returncode == 0 and result.stdout:
             container_id = result.stdout.strip()
-            print(f"Container started: name={container_name} id={container_id}")
+            cdp_port = await get_host_port(container_name, 9222)
+            vnc_port = await get_host_port(container_name, 5900)
+            print(f"Container started: name={container_name} id={container_id} cdp_port={cdp_port} vnc_port={vnc_port}")
             return container_id
         raise Exception(f"Unable to launch Chromium for {container_name}")
     except subprocess.CalledProcessError as e:
@@ -154,8 +126,7 @@ async def get_container_last_activity(container_name: str) -> float | None:
 
 
 async def configure_container(container_name: str, config: dict[str, Any]) -> None:
-    ip = await get_tailscale_ip(container_name)
-    print(f"Configuring container {container_name} with IP {ip} and config {config}...")
+    print(f"Configuring container {container_name} with config {config}...")
 
     if proxy_url := config.get("proxy_url", ""):
         try:
@@ -181,8 +152,9 @@ async def configure_container(container_name: str, config: dict[str, Any]) -> No
             run_podman([
                 "exec",
                 container_name,
-                "pkill",
-                "tinyproxy",
+                "sh",
+                "-c",
+                "pkill tinyproxy || true",
             ])
             run_podman([
                 "exec",
@@ -230,7 +202,8 @@ async def create_browser(browser_id: str):
     container_name = f"chromium-{browser_id}"
     try:
         await launch_container(CONTAINER_IMAGE, container_name)
-        return await connect_browser_to_tailscale(browser_id)
+        print(f"Browser {browser_id} is started.")
+        return {"container_name": container_name, "status": "created"}
     except Exception as e:
         detail = f"Unable to start browser {browser_id}!"
         print(f"{detail} Exception={e}")
@@ -263,21 +236,9 @@ async def get_browser(browser_id: str):
         detail = f"Browser {browser_id} not found!"
         print(detail)
         raise HTTPException(status_code=404, detail=detail)
-    MAX_ATTEMPTS = 3
-    for attempt in range(MAX_ATTEMPTS):
-        print(f"Getting information for {container_name}: attempt {attempt + 1}/{MAX_ATTEMPTS}...")
-        try:
-            ip_address = await get_tailscale_ip(container_name)
-            cdp_url = f"http://{ip_address}:9222"
-            last_activity_timestamp = await get_container_last_activity(container_name)
-            print(f"Browser {browser_id}: ip_address={ip_address} cdp_url={cdp_url}.")
-            return {"ip_address": ip_address, "cdp_url": cdp_url, "last_activity_timestamp": last_activity_timestamp}
-        except Exception as e:
-            await asyncio.sleep(1)
-            if attempt + 1 == MAX_ATTEMPTS:
-                detail = f"Unable to get Tailscale IP address for {container_name}!"
-                print(f"{detail} Exception={e}")
-                raise HTTPException(status_code=500, detail=detail)
+    last_activity_timestamp = await get_container_last_activity(container_name)
+    print(f"Browser {browser_id}: last_activity_timestamp={last_activity_timestamp}.")
+    return {"last_activity_timestamp": last_activity_timestamp}
 
 
 @app.get("/api/v1/browsers")
@@ -289,51 +250,6 @@ async def list_browsers():
         return JSONResponse(all_browsers)
     except Exception as e:
         detail = "Unable to list all browsers"
-        print(f"{detail} Exception={e}")
-        raise HTTPException(status_code=500, detail=detail)
-
-
-async def connect_browser_to_tailscale(browser_id: str):
-    print(f"Connecting browser {browser_id} to Tailscale...")
-    container_name = f"chromium-{browser_id}"
-    if not await container_exists(container_name):
-        detail = f"Browser {browser_id} not found!"
-        print(detail)
-        raise HTTPException(status_code=404, detail=detail)
-    try:
-        MAX_ATTEMPTS = 3
-        for attempt in range(MAX_ATTEMPTS):
-            await asyncio.sleep(1)
-            print(f"Setting up Tailscale for {container_name}: attempt {attempt + 1}/{MAX_ATTEMPTS}...")
-            if await setup_tailscale(container_name):
-                print(f"Browser {browser_id} is connected to Tailscale.")
-                return await get_browser(browser_id)
-        raise Exception(f"Unable to setup Tailscale after {MAX_ATTEMPTS}!")
-    except Exception as e:
-        detail = f"Unable to connect browser {browser_id} to Tailscale!"
-        print(f"{detail} Exception={e}")
-        raise HTTPException(status_code=500, detail=detail)
-
-
-@app.post("/api/v1/browsers/{browser_id}/connect")
-async def connect_browser(browser_id: str):
-    return await connect_browser_to_tailscale(browser_id)
-
-
-@app.post("/api/v1/browsers/{browser_id}/disconnect")
-async def disconnect_browser(browser_id: str):
-    print(f"Disconnecting browser {browser_id} from Tailscale...")
-    container_name = f"chromium-{browser_id}"
-    if not await container_exists(container_name):
-        detail = f"Browser {browser_id} not found!"
-        print(detail)
-        raise HTTPException(status_code=404, detail=detail)
-    try:
-        await terminate_tailscale(container_name)
-        print(f"Browser {browser_id} is disconnected from Tailscale")
-        return {"status": "disconnected"}
-    except Exception as e:
-        detail = f"Unable to disconnect browser {browser_id} from Tailscale!"
         print(f"{detail} Exception={e}")
         raise HTTPException(status_code=500, detail=detail)
 
@@ -368,8 +284,10 @@ async def resume_browser(browser_id: str):
 
 async def get_cdp_url(browser_id: str) -> str:
     container_name = f"chromium-{browser_id}"
-    ip_address = await get_tailscale_ip(container_name)
-    return f"http://{ip_address}:9222"
+    host_port = await get_host_port(container_name, 9222)
+    if not host_port:
+        raise Exception(f"CDP port not found for {container_name}")
+    return f"http://127.0.0.1:{host_port}"
 
 
 async def get_cdp_websocket_url(browser_id: str) -> str:
@@ -528,9 +446,7 @@ async def cdp_devtools_websocket_proxy(client_ws: WebSocket, path: str):
         await client_ws.close(code=4000, reason="Page not found in any browser")
         return
 
-    container_name = f"chromium-{browser_id}"
-    ip_address = await get_tailscale_ip(container_name)
-    print(f"[CDP] Found page {page_id} in browser {browser_id}, IP: {ip_address}")
+    print(f"[CDP] Found page {page_id} in browser {browser_id}")
 
     remote_url = await get_page_websocket_url(browser_id, page_id)
     if not remote_url:
@@ -575,15 +491,15 @@ async def vnc_live_viewer(browser_id: str, request: Request):
 @app.websocket("/websockify/{browser_id}")
 async def websockify_proxy(websocket: WebSocket, browser_id: str):
     container_name = f"chromium-{browser_id}"
-    target_ip = await get_tailscale_ip(container_name)
-    if not target_ip:
+    vnc_port = await get_host_port(container_name, 5900)
+    if not vnc_port:
         await websocket.close()
         return
 
     await websocket.accept(subprotocol="binary")
 
     try:
-        reader, writer = await asyncio.open_connection(target_ip, 5900)
+        reader, writer = await asyncio.open_connection("127.0.0.1", vnc_port)
     except Exception:
         await websocket.close()
         return
@@ -614,8 +530,5 @@ app.mount("/", StaticFiles(directory="webui", html=True), name="webui")
 
 
 if __name__ == "__main__":
-    if not TS_AUTHKEY:
-        print("Fatal error: TS_AUTHKEY env is not present", file=sys.stderr)
-        sys.exit(1)
     port = int(os.getenv("PORT", 8300))
     uvicorn.run("chromefleet:app", host="0.0.0.0", port=port, reload=True)
