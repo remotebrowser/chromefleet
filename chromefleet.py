@@ -19,11 +19,23 @@ from fastapi.staticfiles import StaticFiles
 
 TS_AUTHKEY = os.getenv("TS_AUTHKEY")
 CONTAINER_IMAGE = os.getenv("CONTAINER_IMAGE", "ghcr.io/remotebrowser/chromium-live")
+# Container runtime: "docker" or "podman". Default to docker for Docker-based deployments.
+CONTAINER_RUNTIME = os.getenv("CONTAINER_RUNTIME", "docker").lower()
 
 
 def run_podman(args: list[str]) -> subprocess.CompletedProcess[str]:
-    cmd = ["podman"]
-    if os.environ.get("CONTAINER_HOST"):
+    """
+    Wrapper around the container CLI.
+
+    Historically this used Podman, but we now support both Docker
+    and Podman, controlled via the CONTAINER_RUNTIME env var.
+    The function name is kept for compatibility with existing calls.
+    """
+    runtime = CONTAINER_RUNTIME if CONTAINER_RUNTIME in ("docker", "podman") else "docker"
+
+    cmd = [runtime]
+    # Podman remote mode (used when talking to a podman service)
+    if runtime == "podman" and os.environ.get("CONTAINER_HOST"):
         cmd.append("--remote")
     cmd.extend(args)
     return subprocess.run(cmd, capture_output=True, text=True, check=True, encoding="utf-8", errors="replace")
@@ -72,6 +84,8 @@ async def terminate_tailscale(container_name: str) -> bool:
 
 async def launch_container(image_name: str, container_name: str) -> str:
     print(f"Launching Chromium container as {container_name}...")
+    runtime = CONTAINER_RUNTIME if CONTAINER_RUNTIME in ("docker", "podman") else "docker"
+
     cmd = [
         "run",
         "-d",
@@ -79,18 +93,24 @@ async def launch_container(image_name: str, container_name: str) -> str:
         "--name",
         container_name,
     ]
-    # On macOS, Podman runs in a VM. This specific container image requires --privileged
-    # to correctly access system services (like DBus) and devices inside that VM.
-    if sys.platform == "darwin":
+    if runtime == "podman":
+        # On macOS, Podman runs in a VM. This specific container image requires --privileged
+        # to correctly access system services (like DBus) and devices inside that VM.
+        if sys.platform == "darwin":
+            cmd.append("--privileged")
+
+        cmd.extend([
+            "--cap-add=NET_ADMIN",
+            "--cap-add=NET_RAW",
+            "--device",
+            "/dev/net/tun:/dev/net/tun",
+        ])
+    else:
+        # For Docker (including Docker Desktop), rely on --privileged and let
+        # the container manage /dev/net/tun internally instead of binding from host.
         cmd.append("--privileged")
 
-    cmd.extend([
-        "--cap-add=NET_ADMIN",
-        "--cap-add=NET_RAW",
-        "--device",
-        "/dev/net/tun:/dev/net/tun",
-        image_name,
-    ])
+    cmd.append(image_name)
     try:
         result = run_podman(cmd)
         if result.returncode == 0 and result.stdout:
@@ -104,7 +124,13 @@ async def launch_container(image_name: str, container_name: str) -> str:
 
 async def container_exists(container_name: str) -> bool:
     try:
-        result = run_podman(["container", "exists", container_name])
+        runtime = CONTAINER_RUNTIME if CONTAINER_RUNTIME in ("docker", "podman") else "docker"
+        if runtime == "podman":
+            result = run_podman(["container", "exists", container_name])
+        else:
+            # Docker does not have `container exists`; use inspect instead.
+            # It will exit non-zero if the container does not exist.
+            result = run_podman(["inspect", "-f", "{{.State.Running}}", container_name])
         return result.returncode == 0
     except subprocess.CalledProcessError:
         return False
@@ -229,7 +255,10 @@ async def create_browser(browser_id: str):
     print(f"Starting browser {browser_id}...")
     container_name = f"chromium-{browser_id}"
     try:
-        await launch_container(CONTAINER_IMAGE, container_name)
+        # Avoid name-conflict errors if the container already exists/runs:
+        # re-use the existing container and just (re)connect it to Tailscale.
+        if not await container_exists(container_name):
+            await launch_container(CONTAINER_IMAGE, container_name)
         return await connect_browser_to_tailscale(browser_id)
     except Exception as e:
         detail = f"Unable to start browser {browser_id}!"
@@ -545,9 +574,6 @@ async def cdp_devtools_websocket_proxy(client_ws: WebSocket, path: str):
 
 @app.get("/live/{browser_id}")
 async def vnc_live_viewer(browser_id: str, request: Request):
-    forwarded_scheme = request.headers.get("x-forwarded-scheme", "")
-    scheme = forwarded_scheme if forwarded_scheme else request.url.scheme
-    ws_scheme = "wss" if scheme == "https" else "ws"
     html = f"""
     <!DOCTYPE html>
     <html>
@@ -563,9 +589,12 @@ async def vnc_live_viewer(browser_id: str, request: Request):
         <script type="module">
             import RFB from '/rfb.bundle.js';
 
+            const wsScheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+            const wsUrl = wsScheme + '://' + window.location.host + '/websockify/{browser_id}';
+
             const rfb = new RFB(
                 document.getElementById('screen'),
-                '{ws_scheme}://{request.headers["host"]}/websockify/{browser_id}'
+                wsUrl
             );
             rfb.scaleViewport = true;
         </script>
@@ -583,7 +612,11 @@ async def websockify_proxy(websocket: WebSocket, browser_id: str):
         await websocket.close()
         return
 
-    await websocket.accept(subprotocol="binary")
+    client_subprotocol = websocket.headers.get("sec-websocket-protocol")
+    if client_subprotocol and "binary" in [p.strip() for p in client_subprotocol.split(",")]:
+        await websocket.accept(subprotocol="binary")
+    else:
+        await websocket.accept()
 
     try:
         reader, writer = await asyncio.open_connection(target_ip, 5900)
@@ -609,6 +642,7 @@ async def websockify_proxy(websocket: WebSocket, browser_id: str):
                 await websocket.send_bytes(data)
         except Exception:
             pass
+
 
     await asyncio.gather(ws_to_vnc(), vnc_to_ws())
 

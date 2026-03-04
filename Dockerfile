@@ -2,7 +2,7 @@ FROM mirror.gcr.io/library/python:3.13-slim-bookworm
 
 COPY --from=ghcr.io/astral-sh/uv:0.9 /uv /uvx /bin/
 
-RUN apt-get update -y && apt-get install --no-install-recommends -y curl podman gnupg
+RUN apt-get update -y && apt-get install --no-install-recommends -y curl docker.io gnupg
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONFAULTHANDLER=1
