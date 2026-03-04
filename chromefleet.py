@@ -428,7 +428,37 @@ async def find_browser_id(page_id: str) -> str | None:
     return None
 
 
-async def websocket_proxy(client_ws: WebSocket, remote_url: str):
+def patch_cdp_target(message: str, browser_id: str) -> str:
+    try:
+        data = json.loads(message)
+    except (json.JSONDecodeError, TypeError):
+        return message
+
+    if isinstance(data, dict):
+        if data.get("method") == "Target.targetCreated":  # type: ignore[reportUnknownMemberAccess]
+            params = data.get("params")  # type: ignore[reportUnknownVariableType]
+            if isinstance(params, dict):
+                target_info = params.get("targetInfo")  # type: ignore[reportUnknownVariableType]
+                if isinstance(target_info, dict) and "targetId" in target_info:
+                    target_info["targetId"] = browser_id + "-" + str(target_info["targetId"])  # type: ignore[reportUnknownArgumentType]
+                    return json.dumps(data)
+        elif data.get("method") == "Target.getTargetInfo":  # type: ignore[reportUnknownMemberAccess]
+            params = data.get("params")  # type: ignore[reportUnknownVariableType]
+            if isinstance(params, dict) and "targetId" in params:
+                target_id = str(params["targetId"])  # type: ignore[reportUnknownArgumentType]
+                if "-" in target_id:
+                    params["targetId"] = target_id.split("-", 1)[1]
+                    return json.dumps(data)
+        elif "result" in data:
+            result = data.get("result")  # type: ignore[reportUnknownVariableType]
+            if isinstance(result, dict) and "targetId" in result:
+                result["targetId"] = browser_id + "-" + str(result["targetId"])  # type: ignore[reportUnknownArgumentType]
+                return json.dumps(data)
+
+    return message
+
+
+async def websocket_proxy(client_ws: WebSocket, remote_url: str, browser_id: str):
     try:
         async with websockets.connect(
             remote_url, ping_interval=60, ping_timeout=30, close_timeout=7200, max_size=10 * 1024 * 1024
@@ -439,6 +469,8 @@ async def websocket_proxy(client_ws: WebSocket, remote_url: str):
                 try:
                     while True:
                         message = await client_ws.receive_text()
+                        message = patch_cdp_target(message, browser_id)
+                        print(f"[CDP] Client -> Remote: {message[:100]}")
                         await remote_ws.send(message)
                 except (WebSocketDisconnect, RuntimeError):
                     print("[CDP] Client disconnected")
@@ -448,8 +480,11 @@ async def websocket_proxy(client_ws: WebSocket, remote_url: str):
             async def remote_to_client():
                 try:
                     async for message in remote_ws:
+                        msg_text = message if isinstance(message, str) else message.decode()
+                        msg_text = patch_cdp_target(msg_text, browser_id)
+                        print(f"[CDP] Remote -> Client: {msg_text[:100]}")
                         if client_ws.client_state == WebSocketState.CONNECTED:
-                            await client_ws.send_text(message if isinstance(message, str) else message.decode())
+                            await client_ws.send_text(msg_text)
                         else:
                             print("[CDP] Client not connected, breaking")
                             break
@@ -503,7 +538,7 @@ async def cdp_browser_websocket_proxy(client_ws: WebSocket, browser_id: str):
         return
 
     print(f"[CDP] Client connected, proxying to {remote_url}")
-    await websocket_proxy(client_ws, remote_url)
+    await websocket_proxy(client_ws, remote_url, browser_id)
     print("[CDP] cdp_browser_websocket_proxy exiting")
 
 
@@ -520,17 +555,21 @@ async def cdp_devtools_websocket_proxy(client_ws: WebSocket, path: str):
         await client_ws.close(code=4000, reason="No page_id in path")
         return
 
-    print(f"[CDP] Looking for page_id={page_id}")
+    browser_id = None
+    if "-" in page_id:
+        parts = page_id.split("-")
+        browser_id = parts[0]
+        page_id = parts[1]
+        print(f"[CDP] browser_id={browser_id} page_id={page_id}")
+    else:
+        print(f"[CDP] Looking for page_id={page_id}")
+        browser_id = await find_browser_id(page_id)
+        print(f"[CDP] Lookup result for page {page_id}: in browser {browser_id}")
 
-    browser_id = await find_browser_id(page_id)
-    if not browser_id:
+    if browser_id is None:
         print(f"[CDP] Page {page_id} not found in any browser")
         await client_ws.close(code=4000, reason="Page not found in any browser")
         return
-
-    container_name = f"chromium-{browser_id}"
-    ip_address = await get_tailscale_ip(container_name)
-    print(f"[CDP] Found page {page_id} in browser {browser_id}, IP: {ip_address}")
 
     remote_url = await get_page_websocket_url(browser_id, page_id)
     if not remote_url:
@@ -539,7 +578,7 @@ async def cdp_devtools_websocket_proxy(client_ws: WebSocket, path: str):
         return
 
     print(f"[CDP] Connecting to {remote_url}")
-    await websocket_proxy(client_ws, remote_url)
+    await websocket_proxy(client_ws, remote_url, browser_id)
     print("[CDP] cdp_devtools_websocket_proxy exiting")
 
 
