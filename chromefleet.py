@@ -440,19 +440,19 @@ def patch_cdp_target(message: str, browser_id: str) -> str:
             if isinstance(params, dict):
                 target_info = params.get("targetInfo")  # type: ignore[reportUnknownVariableType]
                 if isinstance(target_info, dict) and "targetId" in target_info:
-                    target_info["targetId"] = browser_id + "-" + str(target_info["targetId"])  # type: ignore[reportUnknownArgumentType]
+                    target_info["targetId"] = browser_id + "@" + str(target_info["targetId"])  # type: ignore[reportUnknownArgumentType]
                     return json.dumps(data)
         elif data.get("method") == "Target.getTargetInfo":  # type: ignore[reportUnknownMemberAccess]
             params = data.get("params")  # type: ignore[reportUnknownVariableType]
             if isinstance(params, dict) and "targetId" in params:
                 target_id = str(params["targetId"])  # type: ignore[reportUnknownArgumentType]
                 if "-" in target_id:
-                    params["targetId"] = target_id.split("-", 1)[1]
+                    params["targetId"] = target_id.split("@", 1)[1]
                     return json.dumps(data)
         elif "result" in data:
             result = data.get("result")  # type: ignore[reportUnknownVariableType]
             if isinstance(result, dict) and "targetId" in result:
-                result["targetId"] = browser_id + "-" + str(result["targetId"])  # type: ignore[reportUnknownArgumentType]
+                result["targetId"] = browser_id + "@" + str(result["targetId"])  # type: ignore[reportUnknownArgumentType]
                 return json.dumps(data)
 
     return message
@@ -556,8 +556,8 @@ async def cdp_devtools_websocket_proxy(client_ws: WebSocket, path: str):
         return
 
     browser_id = None
-    if "-" in page_id:
-        parts = page_id.split("-")
+    if "@" in page_id:
+        parts = page_id.split("@")
         browser_id = parts[0]
         page_id = parts[1]
         print(f"[CDP] browser_id={browser_id} page_id={page_id}")
