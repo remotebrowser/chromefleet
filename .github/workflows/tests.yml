@@ -22,15 +22,17 @@ jobs:
         run: uv sync --all-extras --dev
 
       - name: Run chromefleet
-        run: uv run chromefleet.py &
-        env:
-          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: uv run chromefleet.py &> chromefleet.log &
 
       - name: Wait for health check
         run: while ! curl -s 'http://localhost:8300/health' | grep 'OK'; do sleep 1; done
         timeout-minutes: 3
 
       - name: Run E2E tests
-        run: uv run pytest tests/ -v
+        run: uv run pytest tests/ -v -s
         env:
           CHROMEFLEET_URL: http://localhost:8300
+
+      - name: Show chromefleet logs
+        if: always()
+        run: cat chromefleet.log
