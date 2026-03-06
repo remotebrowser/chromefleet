@@ -49,9 +49,7 @@ jobs:
 
     steps:
       - name: Run the container
-        run: docker run -d --rm --name chromefleet -p 8300:8300 -e TS_AUTHKEY ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-        env:
-          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: docker run -d --rm --name chromefleet -p 8300:8300 ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
 
       - name: Run the health check validation
         run: while ! curl -s 'http://localhost:8300/health' | grep 'OK'; do sleep 1; done
