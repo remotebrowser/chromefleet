@@ -446,7 +446,7 @@ def patch_cdp_target(message: str, browser_id: str) -> str:
             params = data.get("params")  # type: ignore[reportUnknownVariableType]
             if isinstance(params, dict) and "targetId" in params:
                 target_id = str(params["targetId"])  # type: ignore[reportUnknownArgumentType]
-                if "-" in target_id:
+                if "@" in target_id:
                     params["targetId"] = target_id.split("@", 1)[1]
                     return json.dumps(data)
         elif "result" in data:
