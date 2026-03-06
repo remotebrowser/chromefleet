@@ -520,9 +520,6 @@ async def cdp_devtools_websocket_proxy(client_ws: WebSocket, path: str):
 
 @app.get("/live/{browser_id}")
 async def vnc_live_viewer(browser_id: str, request: Request):
-    forwarded_scheme = request.headers.get("x-forwarded-scheme", "")
-    scheme = forwarded_scheme if forwarded_scheme else request.url.scheme
-    ws_scheme = "wss" if scheme == "https" else "ws"
     html = f"""
     <!DOCTYPE html>
     <html>
@@ -538,9 +535,12 @@ async def vnc_live_viewer(browser_id: str, request: Request):
         <script type="module">
             import RFB from '/rfb.bundle.js';
 
+            const wsScheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+            const wsUrl = wsScheme + '://' + window.location.host + '/websockify/{browser_id}';
+
             const rfb = new RFB(
                 document.getElementById('screen'),
-                '{ws_scheme}://{request.headers["host"]}/websockify/{browser_id}'
+                wsUrl
             );
             rfb.scaleViewport = true;
         </script>
@@ -558,7 +558,11 @@ async def websockify_proxy(websocket: WebSocket, browser_id: str):
         await websocket.close()
         return
 
-    await websocket.accept(subprotocol="binary")
+    client_subprotocol = websocket.headers.get("sec-websocket-protocol")
+    if client_subprotocol and "binary" in [p.strip() for p in client_subprotocol.split(",")]:
+        await websocket.accept(subprotocol="binary")
+    else:
+        await websocket.accept()
 
     try:
         reader, writer = await asyncio.open_connection(_container_host(), vnc_port)
