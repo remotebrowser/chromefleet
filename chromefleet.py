@@ -597,4 +597,5 @@ app.mount("/", StaticFiles(directory="webui", html=True), name="webui")
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8300))
-    uvicorn.run("chromefleet:app", host="0.0.0.0", port=port, reload=True)
+    reload = os.getenv("ENV", "development").lower() in ("development", "dev")
+    uvicorn.run("chromefleet:app", host="0.0.0.0", port=port, reload=reload)

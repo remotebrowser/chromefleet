@@ -19,6 +19,7 @@ COPY webui/* /app/webui/
 RUN uv sync --no-dev
 
 ENV PATH="/app/.venv/bin:$PATH"
+ENV ENV=production
 
 EXPOSE 8300
 
