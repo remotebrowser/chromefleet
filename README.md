@@ -8,6 +8,8 @@ uv run chromefleet.py
 
 For Dokku deployment, see the [deployment guide](deploy-dokku.md).
 
+For production tuning and anti-leak safeguards, see [ops hardening](docs/ops-hardening.md).
+
 ## API
 
 ### Start a new browser

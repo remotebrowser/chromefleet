@@ -5,8 +5,10 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.request
 import websockets
+from contextlib import suppress
 from datetime import datetime
 from typing import Any
 
@@ -20,6 +22,16 @@ from fastapi.staticfiles import StaticFiles
 CONTAINER_IMAGE = os.getenv("CONTAINER_IMAGE", "ghcr.io/remotebrowser/chromium-live")
 DOCKER_INTERNAL_HOST = "172.17.0.1"
 
+MAX_ACTIVE_BROWSERS = int(os.getenv("MAX_ACTIVE_BROWSERS", "30"))
+BROWSER_IDLE_TTL_SECONDS = int(os.getenv("BROWSER_IDLE_TTL_SECONDS", "1800"))
+BROWSER_CLEANUP_INTERVAL_SECONDS = int(os.getenv("BROWSER_CLEANUP_INTERVAL_SECONDS", "60"))
+USE_ACTIVITY_DB_FOR_IDLE_CLEANUP = os.getenv("USE_ACTIVITY_DB_FOR_IDLE_CLEANUP", "false").lower() == "true"
+
+ENABLE_VERBOSE_APP_LOGS = os.getenv("ENABLE_VERBOSE_APP_LOGS", "false").lower() == "true"
+ENABLE_VERBOSE_CDP_LOGS = os.getenv("ENABLE_VERBOSE_CDP_LOGS", "false").lower() == "true"
+ENABLE_CDP_RETRY_LOGS = os.getenv("ENABLE_CDP_RETRY_LOGS", "false").lower() == "true"
+CDP_LOG_SAMPLE_EVERY = max(1, int(os.getenv("CDP_LOG_SAMPLE_EVERY", "100")))
+
 
 def run_podman(args: list[str]) -> subprocess.CompletedProcess[str]:
     cmd = ["podman"]
@@ -27,6 +39,102 @@ def run_podman(args: list[str]) -> subprocess.CompletedProcess[str]:
         cmd.append("--remote")
     cmd.extend(args)
     return subprocess.run(cmd, capture_output=True, text=True, check=True, encoding="utf-8", errors="replace")
+
+
+CDP_LOG_COUNTER = 0
+
+
+def app_log(message: str):
+    if ENABLE_VERBOSE_APP_LOGS:
+        print(message)
+
+
+def cdp_log(message: str):
+    global CDP_LOG_COUNTER
+    if not ENABLE_VERBOSE_CDP_LOGS:
+        return
+    CDP_LOG_COUNTER += 1
+    if CDP_LOG_COUNTER % CDP_LOG_SAMPLE_EVERY == 0:
+        print(f"{message} [sampled every {CDP_LOG_SAMPLE_EVERY} msgs]")
+
+
+def cdp_retry_log(message: str):
+    if ENABLE_CDP_RETRY_LOGS:
+        print(message)
+
+
+async def list_browser_containers() -> list[str]:
+    containers = await list_containers()
+    return [c for c in containers if c.startswith("chromium-")]
+
+
+async def ensure_browser_capacity() -> None:
+    browsers = await list_browser_containers()
+    if len(browsers) >= MAX_ACTIVE_BROWSERS:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many active browsers ({len(browsers)}/{MAX_ACTIVE_BROWSERS})",
+        )
+
+
+async def get_container_started_at(container_name: str) -> float | None:
+    try:
+        result = run_podman(["inspect", "-f", "{{ index .Config.Labels \"chromefleet.launched_at\" }}", container_name])
+        value = result.stdout.strip()
+        return float(value) if value and value != "<no value>" else None
+    except Exception:
+        return None
+
+
+async def cleanup_idle_browsers() -> dict[str, int]:
+    now = time.time()
+    cleaned = 0
+    checked = 0
+    errors = 0
+
+    for container_name in await list_browser_containers():
+        checked += 1
+
+        idle_anchor = await get_container_started_at(container_name)
+        if USE_ACTIVITY_DB_FOR_IDLE_CLEANUP:
+            last_activity = await get_container_last_activity(container_name)
+            if last_activity is not None:
+                idle_anchor = last_activity
+
+        if idle_anchor is None:
+            continue
+
+        idle_for = now - idle_anchor
+        if idle_for <= BROWSER_IDLE_TTL_SECONDS:
+            continue
+        try:
+            await kill_container(container_name)
+            cleaned += 1
+            print(
+                f"Idle browser cleaned: name={container_name} idle_for={int(idle_for)}s ttl={BROWSER_IDLE_TTL_SECONDS}s"
+            )
+        except Exception as e:
+            errors += 1
+            print(f"Failed idle cleanup for {container_name}: {e}")
+
+    return {"checked": checked, "cleaned": cleaned, "errors": errors}
+
+
+async def browser_cleanup_loop():
+    print(
+        f"Browser cleanup loop started: ttl={BROWSER_IDLE_TTL_SECONDS}s interval={BROWSER_CLEANUP_INTERVAL_SECONDS}s"
+    )
+    while True:
+        try:
+            result = await cleanup_idle_browsers()
+            if result["cleaned"] > 0 or result["errors"] > 0:
+                print(
+                    "Browser cleanup summary: "
+                    + f"checked={result['checked']} cleaned={result['cleaned']} errors={result['errors']}"
+                )
+        except Exception as e:
+            print(f"Browser cleanup loop error: {e}")
+        await asyncio.sleep(BROWSER_CLEANUP_INTERVAL_SECONDS)
 
 
 async def get_host_port(container_name: str, container_port: int) -> int | None:
@@ -49,6 +157,8 @@ async def launch_container(image_name: str, container_name: str) -> str:
         "--rm",
         "--name",
         container_name,
+        "--label",
+        f"chromefleet.launched_at={int(time.time())}",
     ]
     # On macOS, Podman runs in a VM. This specific container image requires --privileged
     # to correctly access system services (like DBus) and devices inside that VM.
@@ -96,12 +206,12 @@ async def kill_container(container_name: str):
 
 
 async def list_containers() -> list[str]:
-    print("Retrieving the list of all containers...")
+    app_log("Retrieving the list of all containers...")
     try:
         result = run_podman(["container", "ls", "--format", "{{.Names}}"])
         if result.returncode == 0:
             containers = result.stdout.splitlines() if result.stdout else []
-            print(f"All containers are obtained. Total={len(containers)}")
+            app_log(f"All containers are obtained. Total={len(containers)}")
             return containers
         else:
             raise Exception("Unable to list all containers")
@@ -191,6 +301,20 @@ def get_git_revision() -> str:
 app = FastAPI(title="Chrome Fleet")
 
 
+@app.on_event("startup")
+async def on_startup():
+    app.state.cleanup_task = asyncio.create_task(browser_cleanup_loop())
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    task = getattr(app.state, "cleanup_task", None)
+    if task:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
 @app.get("/health")
 async def health() -> str:
     git_rev = get_git_revision()[:10]
@@ -201,10 +325,20 @@ async def health() -> str:
 async def create_browser(browser_id: str):
     print(f"Starting browser {browser_id}...")
     container_name = f"chromium-{browser_id}"
+
+    if await container_exists(container_name):
+        detail = f"Browser {browser_id} already exists"
+        print(detail)
+        raise HTTPException(status_code=409, detail=detail)
+
+    await ensure_browser_capacity()
+
     try:
         await launch_container(CONTAINER_IMAGE, container_name)
         print(f"Browser {browser_id} is started.")
         return {"container_name": container_name, "status": "created"}
+    except HTTPException:
+        raise
     except Exception as e:
         detail = f"Unable to start browser {browser_id}!"
         print(f"{detail} Exception={e}")
@@ -301,7 +435,7 @@ async def get_cdp_websocket_url(browser_id: str) -> str:
     def fetch():
         with urllib.request.urlopen(f"{cdp_url}/json/version", timeout=10) as response:
             data = json.loads(response.read().decode())
-            print(f"[CDP] CDP json version gives {data}")
+            cdp_log(f"[CDP] CDP json version gives {data}")
             return data["webSocketDebuggerUrl"]
 
     return await asyncio.to_thread(fetch)
@@ -321,7 +455,7 @@ async def get_page_websocket_url(browser_id: str, page_id: str) -> str | None:
 
         return await asyncio.to_thread(fetch)
     except Exception as e:
-        print(f"[CDP] Error getting page websocket URL for {browser_id}/{page_id}: {e}")
+        cdp_retry_log(f"[CDP] Error getting page websocket URL for {browser_id}/{page_id}: {e}")
         return None
 
 
@@ -336,7 +470,7 @@ async def get_page_list(browser_id: str) -> list[str]:
 
         return await asyncio.to_thread(fetch)
     except Exception as e:
-        print(f"[CDP] Error getting page list for {browser_id}: {e}")
+        cdp_retry_log(f"[CDP] Error getting page list for {browser_id}: {e}")
         return []
 
 
@@ -386,35 +520,35 @@ async def websocket_proxy(client_ws: WebSocket, remote_url: str, browser_id: str
         async with websockets.connect(
             remote_url, ping_interval=60, ping_timeout=30, close_timeout=7200, max_size=10 * 1024 * 1024
         ) as remote_ws:
-            print("[CDP] Connected to remote WebSocket")
+            cdp_log("[CDP] Connected to remote WebSocket")
 
             async def client_to_remote():
                 try:
                     while True:
                         message = await client_ws.receive_text()
                         message = patch_cdp_target(message, browser_id)
-                        print(f"[CDP] Client -> Remote: {message[:100]}")
+                        cdp_log(f"[CDP] Client -> Remote: {message[:100]}")
                         await remote_ws.send(message)
                 except (WebSocketDisconnect, RuntimeError):
-                    print("[CDP] Client disconnected")
+                    cdp_log("[CDP] Client disconnected")
                 except Exception as e:
-                    print(f"[CDP] client_to_remote error: {type(e).__name__}: {e}")
+                    cdp_retry_log(f"[CDP] client_to_remote error: {type(e).__name__}: {e}")
 
             async def remote_to_client():
                 try:
                     async for message in remote_ws:
                         msg_text = message if isinstance(message, str) else message.decode()
                         msg_text = patch_cdp_target(msg_text, browser_id)
-                        print(f"[CDP] Remote -> Client: {msg_text[:100]}")
+                        cdp_log(f"[CDP] Remote -> Client: {msg_text[:100]}")
                         if client_ws.client_state == WebSocketState.CONNECTED:
                             await client_ws.send_text(msg_text)
                         else:
-                            print("[CDP] Client not connected, breaking")
+                            cdp_log("[CDP] Client not connected, breaking")
                             break
                 except ConnectionClosed as e:
-                    print(f"[CDP] Remote disconnected: code={e.code} reason={e.reason}")
+                    cdp_log(f"[CDP] Remote disconnected: code={e.code} reason={e.reason}")
                 except Exception as e:
-                    print(f"[CDP] remote_to_client error: {type(e).__name__}: {e}")
+                    cdp_retry_log(f"[CDP] remote_to_client error: {type(e).__name__}: {e}")
 
             tasks = [
                 asyncio.create_task(client_to_remote()),
@@ -430,25 +564,25 @@ async def websocket_proxy(client_ws: WebSocket, remote_url: str, browser_id: str
                     pass
 
     except OSError as e:
-        print(f"[CDP] Could not connect to remote: {e}")
+        cdp_retry_log(f"[CDP] Could not connect to remote: {e}")
         if client_ws.client_state == WebSocketState.CONNECTED:
             await client_ws.close(code=4502, reason="Remote server unreachable")
     except Exception as e:
-        print(f"[CDP] Unexpected error: {type(e).__name__}: {e}")
+        cdp_retry_log(f"[CDP] Unexpected error: {type(e).__name__}: {e}")
         if client_ws.client_state == WebSocketState.CONNECTED:
             await client_ws.close(code=4500, reason="Internal proxy error")
 
 
 @app.websocket("/cdp/{browser_id}")
 async def cdp_browser_websocket_proxy(client_ws: WebSocket, browser_id: str):
-    print(f"[CDP] Entered cdp_browser_websocket_proxy for browser_id={browser_id}")
+    cdp_log(f"[CDP] Entered cdp_browser_websocket_proxy for browser_id={browser_id}")
     container_name = f"chromium-{browser_id}"
 
     await client_ws.accept()
-    print("[CDP] WebSocket accepted")
+    cdp_log("[CDP] WebSocket accepted")
 
     if not await container_exists(container_name):
-        print(f"[CDP] Container {container_name} not found")
+        cdp_retry_log(f"[CDP] Container {container_name} not found")
         await client_ws.close(code=1008)
         return
 
@@ -456,38 +590,38 @@ async def cdp_browser_websocket_proxy(client_ws: WebSocket, browser_id: str):
     for attempt in range(10):
         try:
             remote_url = await get_cdp_websocket_url(browser_id)
-            print(f"[CDP] Got remote URL: {remote_url}")
+            cdp_log(f"[CDP] Got remote URL: {remote_url}")
             break
         except Exception as e:
-            print(f"[CDP] Attempt {attempt + 1}/10 failed to get debugger URL from {browser_id}: {e}")
+            cdp_retry_log(f"[CDP] Attempt {attempt + 1}/10 failed to get debugger URL from {browser_id}: {e}")
             if attempt < 9:
-                print("[CDP] Retrying in 3 seconds...")
+                cdp_retry_log("[CDP] Retrying in 3 seconds...")
                 await asyncio.sleep(3)
             else:
-                print("[CDP] All retry attempts exhausted")
+                cdp_retry_log("[CDP] All retry attempts exhausted")
                 await client_ws.close(code=4502, reason="Failed to get debugger URL")
                 return
 
     if not remote_url:
-        print("[CDP] No remote URL obtained")
+        cdp_retry_log("[CDP] No remote URL obtained")
         await client_ws.close(code=4502, reason="Failed to get debugger URL")
         return
 
-    print(f"[CDP] Client connected, proxying to {remote_url}")
+    cdp_log(f"[CDP] Client connected, proxying to {remote_url}")
     await websocket_proxy(client_ws, remote_url, browser_id)
-    print("[CDP] cdp_browser_websocket_proxy exiting")
+    cdp_log("[CDP] cdp_browser_websocket_proxy exiting")
 
 
 @app.websocket("/devtools/{path:path}")
 async def cdp_devtools_websocket_proxy(client_ws: WebSocket, path: str):
-    print(f"[CDP] Entered cdp_devtools_websocket_proxy for path={path}")
+    cdp_log(f"[CDP] Entered cdp_devtools_websocket_proxy for path={path}")
     await client_ws.accept()
-    print("[CDP] WebSocket accepted")
+    cdp_log("[CDP] WebSocket accepted")
 
     parts = path.split("/")
     page_id = parts[-1] if parts else None
     if not page_id:
-        print("[CDP] No page_id in path")
+        cdp_retry_log("[CDP] No page_id in path")
         await client_ws.close(code=4000, reason="No page_id in path")
         return
 
@@ -496,26 +630,26 @@ async def cdp_devtools_websocket_proxy(client_ws: WebSocket, path: str):
         parts = page_id.split("@")
         browser_id = parts[0]
         page_id = parts[1]
-        print(f"[CDP] browser_id={browser_id} page_id={page_id}")
+        cdp_log(f"[CDP] browser_id={browser_id} page_id={page_id}")
     else:
-        print(f"[CDP] Looking for page_id={page_id}")
+        cdp_log(f"[CDP] Looking for page_id={page_id}")
         browser_id = await find_browser_id(page_id)
         if browser_id:
-            print(f"[CDP] Found page {page_id} in browser {browser_id}")
+            cdp_log(f"[CDP] Found page {page_id} in browser {browser_id}")
         else:
-            print(f"[CDP] Page {page_id} not found in any browser")
+            cdp_retry_log(f"[CDP] Page {page_id} not found in any browser")
             await client_ws.close(code=4000, reason="Page not found in any browser")
             return
 
     remote_url = await get_page_websocket_url(browser_id, page_id)
     if not remote_url:
-        print(f"[CDP] Could not get websocket URL for page {page_id}")
+        cdp_retry_log(f"[CDP] Could not get websocket URL for page {page_id}")
         await client_ws.close(code=4502, reason="Failed to get page websocket URL")
         return
 
-    print(f"[CDP] Connecting to {remote_url}")
+    cdp_log(f"[CDP] Connecting to {remote_url}")
     await websocket_proxy(client_ws, remote_url, browser_id)
-    print("[CDP] cdp_devtools_websocket_proxy exiting")
+    cdp_log("[CDP] cdp_devtools_websocket_proxy exiting")
 
 
 @app.get("/live/{browser_id}")
@@ -597,4 +731,5 @@ app.mount("/", StaticFiles(directory="webui", html=True), name="webui")
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8300))
-    uvicorn.run("chromefleet:app", host="0.0.0.0", port=port, reload=True)
+    reload_enabled = os.getenv("UVICORN_RELOAD", "false").lower() == "true"
+    uvicorn.run("chromefleet:app", host="0.0.0.0", port=port, reload=reload_enabled)

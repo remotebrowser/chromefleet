@@ -44,6 +44,14 @@ class TestBrowserLifecycle:
         data = response.json()
         assert data["status"] == "created"
 
+    def test_create_duplicate_browser_returns_conflict(self, client):
+        response1 = client.post("/api/v1/browsers/test01dup")
+        assert response1.status_code == 200
+        self.browser_ids.append("test01dup")
+
+        response2 = client.post("/api/v1/browsers/test01dup")
+        assert response2.status_code == 409
+
     def test_get_browser(self, client):
         client.post("/api/v1/browsers/test02")
         self.browser_ids.append("test02")
