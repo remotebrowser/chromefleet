@@ -64,3 +64,8 @@ strictListInference = true
 strictDictionaryInference = true
 strictSetInference = true
 strictParameterNoneValue = true
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.19.0",
+]
