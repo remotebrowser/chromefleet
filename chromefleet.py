@@ -592,10 +592,13 @@ async def websockify_proxy(websocket: WebSocket, browser_id: str):
     await asyncio.gather(ws_to_vnc(), vnc_to_ws())
 
 
-app.mount("/", StaticFiles(directory="webui", html=True), name="webui")
+_base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+app.mount("/", StaticFiles(directory=os.path.join(_base_dir, "webui"), html=True), name="webui")
 
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8300))
-    reload = os.getenv("ENV", "development").lower() in ("development", "dev")
-    uvicorn.run("chromefleet:app", host="0.0.0.0", port=port, reload=reload)
+    frozen = getattr(sys, "frozen", False)
+    development = os.getenv("ENV", "development").lower() in ("development", "dev")
+    reload = not frozen and development
+    uvicorn.run(app if frozen else "chromefleet:app", host="0.0.0.0", port=port, reload=reload)
