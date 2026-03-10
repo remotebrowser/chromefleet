@@ -16,8 +16,9 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocketState
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from residential_proxy import Location, format_massive_proxy_url_from_location
 from websockets.exceptions import ConnectionClosed
+
+from residential_proxy import Location, format_massive_proxy_url_from_location
 
 
 class Settings(BaseSettings):
