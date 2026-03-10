@@ -19,7 +19,6 @@ COPY webui/* /app/webui/
 RUN uv sync --no-dev
 
 ENV PATH="/app/.venv/bin:$PATH"
-ENV ENV=production
 
 EXPOSE 8300
 
@@ -30,4 +29,4 @@ RUN useradd -m -s /bin/bash chromefleet && \
 
 USER chromefleet
 
-ENTRYPOINT ["uv", "run", "chromefleet.py"]
+ENTRYPOINT ["uvicorn", "chromefleet:app", "--host", "0.0.0.0", "--port", "8300"]
