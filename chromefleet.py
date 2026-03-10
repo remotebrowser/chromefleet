@@ -628,6 +628,6 @@ app.mount("/", StaticFiles(directory=os.path.join(_base_dir, "webui"), html=True
 
 
 if __name__ == "__main__":
-    frozen = getattr(sys, "frozen", False)
-    reload = not frozen and development
-    uvicorn.run(app if frozen else "chromefleet:app", host="0.0.0.0", port=settings.PORT, reload=reload)
+    port = int(os.getenv("PORT", 8300))
+    frozen = getattr(sys, "frozen", False)  # set by PyInstaller
+    uvicorn.run(app if frozen else "chromefleet:app", host="127.0.0.1", port=port, reload=not frozen)
