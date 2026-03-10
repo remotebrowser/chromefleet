@@ -6,24 +6,44 @@ import os
 import subprocess
 import sys
 import urllib.request
-import websockets
 from datetime import datetime
 from typing import Any
 
 import uvicorn
+import websockets
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.websockets import WebSocketState
-from websockets.exceptions import ConnectionClosed
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.websockets import WebSocketState
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from websockets.exceptions import ConnectionClosed
 
-CONTAINER_IMAGE = os.getenv("CONTAINER_IMAGE", "ghcr.io/remotebrowser/chromium-live")
+from residential_proxy import Location, format_massive_proxy_url_from_location
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_ignore_empty=True)
+
+    CONTAINER_IMAGE: str = "ghcr.io/remotebrowser/chromium-live"
+    MASSIVE_PROXY_USERNAME: str = ""
+    MASSIVE_PROXY_PASSWORD: str = ""
+    CONTAINER_HOST: str = ""
+    GIT_REV: str = ""
+    PORT: int = 8300
+    ENV: str = "development"
+
+    @property
+    def MASSIVE_PROXY_ENABLED(self) -> bool:
+        return bool(self.MASSIVE_PROXY_USERNAME and self.MASSIVE_PROXY_PASSWORD)
+
+
+settings = Settings()
 DOCKER_INTERNAL_HOST = "172.17.0.1"
 
 
 def run_podman(args: list[str]) -> subprocess.CompletedProcess[str]:
     cmd = ["podman"]
-    if os.environ.get("CONTAINER_HOST"):
+    if settings.CONTAINER_HOST:
         cmd.append("--remote")
     cmd.extend(args)
     return subprocess.run(cmd, capture_output=True, text=True, check=True, encoding="utf-8", errors="replace")
@@ -131,6 +151,7 @@ async def configure_container(container_name: str, config: dict[str, Any]) -> No
 
     if proxy_url := config.get("proxy_url", ""):
         try:
+            proxy_url = proxy_url.removeprefix("http://")
             print(f"Configuring proxy with proxy_url: {proxy_url}")
             print(f"Modifying tinyproxy.conf in {container_name}...")
             run_podman([
@@ -173,9 +194,8 @@ async def configure_container(container_name: str, config: dict[str, Any]) -> No
 
 def get_git_revision() -> str:
     """Get the current git commit hash."""
-    git_rev = os.getenv("GIT_REV")
-    if git_rev:
-        return git_rev
+    if settings.GIT_REV:
+        return settings.GIT_REV
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -202,7 +222,7 @@ async def create_browser(browser_id: str):
     print(f"Starting browser {browser_id}...")
     container_name = f"chromium-{browser_id}"
     try:
-        await launch_container(CONTAINER_IMAGE, container_name)
+        await launch_container(settings.CONTAINER_IMAGE, container_name)
         print(f"Browser {browser_id} is started.")
         return {"container_name": container_name, "status": "created"}
     except Exception as e:
@@ -264,6 +284,18 @@ async def configure_browser(browser_id: str, config: dict[str, Any]):
         print(detail)
         raise HTTPException(status_code=404, detail=detail)
     try:
+        if settings.MASSIVE_PROXY_ENABLED:
+            location = Location(**config.get("location", {}))
+            if location:
+                massive_url = format_massive_proxy_url_from_location(
+                    location,
+                    proxy_session_id=browser_id,
+                    proxy_username=settings.MASSIVE_PROXY_USERNAME,
+                    proxy_password=settings.MASSIVE_PROXY_PASSWORD,
+                )
+                print(f"Generated MassiveProxy proxy_url for app {browser_id}: {massive_url}")
+                config["proxy_url"] = massive_url
+
         await configure_container(container_name, config)
         print(f"Browser {browser_id} is configured.")
         return {"status": "configured"}
