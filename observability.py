@@ -51,7 +51,7 @@ def _setup_logfire():
         console=False,
         scrubbing=False,
     )
-    logfire.instrument_httpx()
+
 
 
 def _setup_logger():
