@@ -53,7 +53,6 @@ def _setup_logfire():
     )
 
 
-
 def _setup_logger():
     logger.remove()
 
