@@ -92,7 +92,7 @@ async def launch_container(image_name: str, container_name: str) -> str:
             return container_id
         raise Exception(f"Unable to launch Chromium for {container_name}")
     except subprocess.CalledProcessError as e:
-        raise Exception(f"Unable to launch Chromium for {container_name}: {e}")
+        raise Exception(f"Unable to launch Chromium for {container_name}: {e}\nstderr: {e.stderr}")
 
 
 async def container_exists(container_name: str) -> bool:
