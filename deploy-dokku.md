@@ -55,11 +55,14 @@ Create the app:
 ```
 dokku apps:create chromefleet
 dokku ports:add chromefleet http:80:8300
-dokku config:set chromefleet CONTAINER_HOST="unix:///run/podman.sock"
+dokku config:set chromefleet CONTAINER_HOST="unix:///run/podman.sock" ENVIRONMENT="production"
 dokku docker-options:add chromefleet deploy "--cap-add=NET_ADMIN"
 dokku docker-options:add chromefleet deploy "--cap-add=NET_RAW"
 dokku docker-options:add chromefleet deploy "--device=/dev/net/tun:/dev/net/tun"
 dokku docker-options:add chromefleet deploy,run "-v /run/podman.sock:/run/podman.sock"
+
+# Optional: observability
+dokku config:set chromefleet LOGFIRE_TOKEN="..." SENTRY_DSN="..."
 ```
 
 Set the domain (optional):
@@ -69,9 +72,9 @@ dokku domains:set chromefleet chromefleet.example.com
 
 Then deploy Chrome Fleet manually to this Dokku machine.
 
-Once deployed, test it by launching a machine:
+Once deployed, test it:
 ```
-curl chromefleet-ip-address/api/v1/start/xyz123
+curl chromefleet-ip-address/health
+curl -X POST chromefleet-ip-address/api/v1/browsers/xyz123
+curl chromefleet-ip-address/api/v1/browsers
 ```
-
-It should return the tailnet IP address for that machine. The Tailscale admin console should also show a node named `chromium-xyz123`.

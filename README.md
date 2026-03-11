@@ -3,8 +3,25 @@
 **Requirements:** [Podman](https://podman.io) and [uv](https://docs.astral.sh/uv).
 
 ```bash
-uv run chromefleet.py
+cp .env.template .env  # then fill in values
+uv run src/chromefleet.py
 ```
+
+## Configuration
+
+Copy `.env.template` to `.env` and set the following variables as needed:
+
+| Variable | Default | Description |
+|---|---|---|
+| `CONTAINER_IMAGE` | `ghcr.io/remotebrowser/chromium-live` | Chromium container image |
+| `CONTAINER_HOST` | _(local)_ | Podman remote socket (e.g. `unix:///run/podman.sock`) |
+| `MASSIVE_PROXY_USERNAME` | | Residential proxy credentials (both required to enable) |
+| `MASSIVE_PROXY_PASSWORD` | | |
+| `PORT` | `8300` | Server port |
+| `ENVIRONMENT` | `development` | Environment name sent to Logfire/Sentry |
+| `LOG_LEVEL` | `INFO` | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `LOGFIRE_TOKEN` | | [Logfire](https://logfire.pydantic.dev) token (optional) |
+| `SENTRY_DSN` | | Sentry DSN (optional) |
 
 For Dokku deployment, see the [deployment guide](deploy-dokku.md).
 
