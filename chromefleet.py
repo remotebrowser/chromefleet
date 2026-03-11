@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -16,9 +17,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocketState
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from websockets.exceptions import ConnectionClosed
-
 from residential_proxy import Location, format_massive_proxy_url_from_location
+from websockets.exceptions import ConnectionClosed
 
 
 class Settings(BaseSettings):
@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     GIT_REV: str = ""
     PORT: int = 8300
     ENV: str = "development"
+    LOG_LEVEL: str = "INFO"
 
     @property
     def MASSIVE_PROXY_ENABLED(self) -> bool:
@@ -38,6 +39,8 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
 DOCKER_INTERNAL_HOST = "172.17.0.1"
 
 
@@ -62,7 +65,7 @@ async def get_host_port(container_name: str, container_port: int) -> int | None:
 
 
 async def launch_container(image_name: str, container_name: str) -> str:
-    print(f"Launching Chromium container as {container_name}...")
+    logger.info(f"Launching Chromium container as {container_name}...")
     cmd = [
         "run",
         "-d",
@@ -88,7 +91,9 @@ async def launch_container(image_name: str, container_name: str) -> str:
             container_id = result.stdout.strip()
             cdp_port = await get_host_port(container_name, 9222)
             vnc_port = await get_host_port(container_name, 5900)
-            print(f"Container started: name={container_name} id={container_id} cdp_port={cdp_port} vnc_port={vnc_port}")
+            logger.info(
+                f"Container started: name={container_name} id={container_id} cdp_port={cdp_port} vnc_port={vnc_port}"
+            )
             return container_id
         raise Exception(f"Unable to launch Chromium for {container_name}")
     except subprocess.CalledProcessError as e:
@@ -104,11 +109,11 @@ async def container_exists(container_name: str) -> bool:
 
 
 async def kill_container(container_name: str):
-    print(f"Killing Chromium contaner {container_name}...")
+    logger.info(f"Killing Chromium container {container_name}...")
     try:
         result = run_podman(["kill", container_name])
         if result.returncode == 0 and result.stdout:
-            print(f"Container killed: name={container_name}")
+            logger.info(f"Container killed: name={container_name}")
         else:
             raise Exception(f"Unable to kill container {container_name}")
     except subprocess.CalledProcessError as e:
@@ -116,12 +121,12 @@ async def kill_container(container_name: str):
 
 
 async def list_containers() -> list[str]:
-    print("Retrieving the list of all containers...")
+    logger.info("Retrieving the list of all containers...")
     try:
         result = run_podman(["container", "ls", "--format", "{{.Names}}"])
         if result.returncode == 0:
             containers = result.stdout.splitlines() if result.stdout else []
-            print(f"All containers are obtained. Total={len(containers)}")
+            logger.info(f"All containers obtained. Total={len(containers)}")
             return containers
         else:
             raise Exception("Unable to list all containers")
@@ -147,7 +152,7 @@ async def get_container_last_activity(container_name: str) -> float | None:
 
 
 async def configure_container(container_name: str, config: dict[str, Any]) -> None:
-    print(f"Configuring container {container_name} with config {config}...")
+    logger.info(f"Configuring container {container_name} with config {config}...")
 
     if proxy_url := config.get("proxy_url", ""):
         try:
@@ -170,7 +175,7 @@ async def configure_container(container_name: str, config: dict[str, Any]) -> No
                 f"$ a\\Upstream http {proxy_url}",
                 "/app/tinyproxy.conf",
             ])
-            print(f"Restarting tinyproxy in {container_name}...")
+            logger.info(f"Restarting tinyproxy in {container_name}...")
             run_podman([
                 "exec",
                 container_name,
@@ -185,11 +190,11 @@ async def configure_container(container_name: str, config: dict[str, Any]) -> No
                 "-c",
                 "tinyproxy -d -c /app/tinyproxy.conf &",
             ])
-            print(f"Proxy configured successfully in {container_name}.")
+            logger.info(f"Proxy configured successfully in {container_name}.")
         except subprocess.CalledProcessError as e:
             raise Exception(f"Error configuring proxy: {e}")
         except Exception as e:
-            print(f"Error configuring proxy: {e}")
+            logger.error(f"Error configuring proxy: {e}")
 
 
 def get_git_revision() -> str:
@@ -219,7 +224,7 @@ async def health() -> str:
 
 @app.post("/api/v1/browsers/{browser_id}")
 async def create_browser(browser_id: str):
-    print(f"Starting browser {browser_id}...")
+    logger.info(f"Starting browser {browser_id}...")
     container_name = f"chromium-{browser_id}"
     try:
         await launch_container(settings.CONTAINER_IMAGE, container_name)
@@ -227,61 +232,61 @@ async def create_browser(browser_id: str):
         return {"container_name": container_name, "status": "created"}
     except Exception as e:
         detail = f"Unable to start browser {browser_id}!"
-        print(f"{detail} Exception={e}")
+        logger.error(f"{detail} Exception={e}")
         raise HTTPException(status_code=500, detail=detail)
 
 
 @app.delete("/api/v1/browsers/{browser_id}")
 async def delete_browser(browser_id: str):
-    print(f"Stopping browser {browser_id}...")
+    logger.info(f"Stopping browser {browser_id}...")
     container_name = f"chromium-{browser_id}"
     if not await container_exists(container_name):
         detail = f"Browser {browser_id} not found!"
-        print(detail)
+        logger.warning(detail)
         raise HTTPException(status_code=404, detail=detail)
     try:
         await kill_container(container_name)
-        print(f"Browser {browser_id} is stopped.")
+        logger.info(f"Browser {browser_id} is stopped.")
         return {"container_name": container_name, "status": "deleted"}
     except Exception as e:
         detail = f"Unable to stop browser {browser_id}!"
-        print(f"{detail} Exception={e}")
+        logger.error(f"{detail} Exception={e}")
         raise HTTPException(status_code=500, detail=detail)
 
 
 @app.get("/api/v1/browsers/{browser_id}")
 async def get_browser(browser_id: str):
-    print(f"Querying browser {browser_id}...")
+    logger.info(f"Querying browser {browser_id}...")
     container_name = f"chromium-{browser_id}"
     if not await container_exists(container_name):
         detail = f"Browser {browser_id} not found!"
-        print(detail)
+        logger.warning(detail)
         raise HTTPException(status_code=404, detail=detail)
     last_activity_timestamp = await get_container_last_activity(container_name)
-    print(f"Browser {browser_id}: last_activity_timestamp={last_activity_timestamp}.")
+    logger.debug(f"Browser {browser_id}: last_activity_timestamp={last_activity_timestamp}.")
     return {"last_activity_timestamp": last_activity_timestamp}
 
 
 @app.get("/api/v1/browsers")
 async def list_browsers():
-    print("Enumerating all browsers...")
+    logger.info("Enumerating all browsers...")
     try:
         containers = await list_containers()
         all_browsers = [c[len("chromium-") :] for c in containers if c.startswith("chromium-")]
         return JSONResponse(all_browsers)
     except Exception as e:
         detail = "Unable to list all browsers"
-        print(f"{detail} Exception={e}")
+        logger.error(f"{detail} Exception={e}")
         raise HTTPException(status_code=500, detail=detail)
 
 
 @app.post("/api/v1/browsers/{browser_id}/configure")
 async def configure_browser(browser_id: str, config: dict[str, Any]):
-    print(f"Configuring browser {browser_id} with config {config}...")
+    logger.info(f"Configuring browser {browser_id} with config {config}...")
     container_name = f"chromium-{browser_id}"
     if not await container_exists(container_name):
         detail = f"Browser {browser_id} not found!"
-        print(detail)
+        logger.warning(detail)
         raise HTTPException(status_code=404, detail=detail)
     try:
         if settings.MASSIVE_PROXY_ENABLED:
@@ -297,11 +302,11 @@ async def configure_browser(browser_id: str, config: dict[str, Any]):
                 config["proxy_url"] = massive_url
 
         await configure_container(container_name, config)
-        print(f"Browser {browser_id} is configured.")
+        logger.info(f"Browser {browser_id} is configured.")
         return {"status": "configured"}
     except Exception as e:
         detail = f"Unable to configure browser {browser_id}!"
-        print(f"{detail} Exception={e}")
+        logger.error(f"{detail} Exception={e}")
         raise HTTPException(status_code=500, detail=detail)
 
 
@@ -333,7 +338,7 @@ async def get_cdp_websocket_url(browser_id: str) -> str:
     def fetch():
         with urllib.request.urlopen(f"{cdp_url}/json/version", timeout=10) as response:
             data = json.loads(response.read().decode())
-            print(f"[CDP] CDP json version gives {data}")
+            logger.debug(f"[CDP] CDP json version gives {data}")
             return data["webSocketDebuggerUrl"]
 
     return await asyncio.to_thread(fetch)
@@ -353,7 +358,7 @@ async def get_page_websocket_url(browser_id: str, page_id: str) -> str | None:
 
         return await asyncio.to_thread(fetch)
     except Exception as e:
-        print(f"[CDP] Error getting page websocket URL for {browser_id}/{page_id}: {e}")
+        logger.error(f"[CDP] Error getting page websocket URL for {browser_id}/{page_id}: {e}")
         return None
 
 
@@ -368,7 +373,7 @@ async def get_page_list(browser_id: str) -> list[str]:
 
         return await asyncio.to_thread(fetch)
     except Exception as e:
-        print(f"[CDP] Error getting page list for {browser_id}: {e}")
+        logger.error(f"[CDP] Error getting page list for {browser_id}: {e}")
         return []
 
 
@@ -418,35 +423,35 @@ async def websocket_proxy(client_ws: WebSocket, remote_url: str, browser_id: str
         async with websockets.connect(
             remote_url, ping_interval=60, ping_timeout=30, close_timeout=7200, max_size=10 * 1024 * 1024
         ) as remote_ws:
-            print("[CDP] Connected to remote WebSocket")
+            logger.info("[CDP] Connected to remote WebSocket")
 
             async def client_to_remote():
                 try:
                     while True:
                         message = await client_ws.receive_text()
                         message = patch_cdp_target(message, browser_id)
-                        print(f"[CDP] Client -> Remote: {message[:100]}")
+                        logger.debug(f"[CDP] Client -> Remote: {message[:100]}")
                         await remote_ws.send(message)
                 except (WebSocketDisconnect, RuntimeError):
-                    print("[CDP] Client disconnected")
+                    logger.info("[CDP] Client disconnected")
                 except Exception as e:
-                    print(f"[CDP] client_to_remote error: {type(e).__name__}: {e}")
+                    logger.error(f"[CDP] client_to_remote error: {type(e).__name__}: {e}")
 
             async def remote_to_client():
                 try:
                     async for message in remote_ws:
                         msg_text = message if isinstance(message, str) else message.decode()
                         msg_text = patch_cdp_target(msg_text, browser_id)
-                        print(f"[CDP] Remote -> Client: {msg_text[:100]}")
+                        logger.debug(f"[CDP] Remote -> Client: {msg_text[:100]}")
                         if client_ws.client_state == WebSocketState.CONNECTED:
                             await client_ws.send_text(msg_text)
                         else:
-                            print("[CDP] Client not connected, breaking")
+                            logger.debug("[CDP] Client not connected, breaking")
                             break
                 except ConnectionClosed as e:
-                    print(f"[CDP] Remote disconnected: code={e.code} reason={e.reason}")
+                    logger.info(f"[CDP] Remote disconnected: code={e.code} reason={e.reason}")
                 except Exception as e:
-                    print(f"[CDP] remote_to_client error: {type(e).__name__}: {e}")
+                    logger.error(f"[CDP] remote_to_client error: {type(e).__name__}: {e}")
 
             tasks = [
                 asyncio.create_task(client_to_remote()),
@@ -462,25 +467,25 @@ async def websocket_proxy(client_ws: WebSocket, remote_url: str, browser_id: str
                     pass
 
     except OSError as e:
-        print(f"[CDP] Could not connect to remote: {e}")
+        logger.error(f"[CDP] Could not connect to remote: {e}")
         if client_ws.client_state == WebSocketState.CONNECTED:
             await client_ws.close(code=4502, reason="Remote server unreachable")
     except Exception as e:
-        print(f"[CDP] Unexpected error: {type(e).__name__}: {e}")
+        logger.error(f"[CDP] Unexpected error: {type(e).__name__}: {e}")
         if client_ws.client_state == WebSocketState.CONNECTED:
             await client_ws.close(code=4500, reason="Internal proxy error")
 
 
 @app.websocket("/cdp/{browser_id}")
 async def cdp_browser_websocket_proxy(client_ws: WebSocket, browser_id: str):
-    print(f"[CDP] Entered cdp_browser_websocket_proxy for browser_id={browser_id}")
+    logger.info(f"[CDP] Entered cdp_browser_websocket_proxy for browser_id={browser_id}")
     container_name = f"chromium-{browser_id}"
 
     await client_ws.accept()
-    print("[CDP] WebSocket accepted")
+    logger.info("[CDP] WebSocket accepted")
 
     if not await container_exists(container_name):
-        print(f"[CDP] Container {container_name} not found")
+        logger.error(f"[CDP] Container {container_name} not found")
         await client_ws.close(code=1008)
         return
 
@@ -488,38 +493,38 @@ async def cdp_browser_websocket_proxy(client_ws: WebSocket, browser_id: str):
     for attempt in range(10):
         try:
             remote_url = await get_cdp_websocket_url(browser_id)
-            print(f"[CDP] Got remote URL: {remote_url}")
+            logger.info(f"[CDP] Got remote URL: {remote_url}")
             break
         except Exception as e:
-            print(f"[CDP] Attempt {attempt + 1}/10 failed to get debugger URL from {browser_id}: {e}")
+            logger.warning(f"[CDP] Attempt {attempt + 1}/10 failed to get debugger URL from {browser_id}: {e}")
             if attempt < 9:
-                print("[CDP] Retrying in 3 seconds...")
+                logger.debug("[CDP] Retrying in 3 seconds...")
                 await asyncio.sleep(3)
             else:
-                print("[CDP] All retry attempts exhausted")
+                logger.error("[CDP] All retry attempts exhausted")
                 await client_ws.close(code=4502, reason="Failed to get debugger URL")
                 return
 
     if not remote_url:
-        print("[CDP] No remote URL obtained")
+        logger.error("[CDP] No remote URL obtained")
         await client_ws.close(code=4502, reason="Failed to get debugger URL")
         return
 
-    print(f"[CDP] Client connected, proxying to {remote_url}")
+    logger.info(f"[CDP] Client connected, proxying to {remote_url}")
     await websocket_proxy(client_ws, remote_url, browser_id)
-    print("[CDP] cdp_browser_websocket_proxy exiting")
+    logger.info("[CDP] cdp_browser_websocket_proxy exiting")
 
 
 @app.websocket("/devtools/{path:path}")
 async def cdp_devtools_websocket_proxy(client_ws: WebSocket, path: str):
-    print(f"[CDP] Entered cdp_devtools_websocket_proxy for path={path}")
+    logger.info(f"[CDP] Entered cdp_devtools_websocket_proxy for path={path}")
     await client_ws.accept()
-    print("[CDP] WebSocket accepted")
+    logger.info("[CDP] WebSocket accepted")
 
     parts = path.split("/")
     page_id = parts[-1] if parts else None
     if not page_id:
-        print("[CDP] No page_id in path")
+        logger.error("[CDP] No page_id in path")
         await client_ws.close(code=4000, reason="No page_id in path")
         return
 
@@ -528,26 +533,26 @@ async def cdp_devtools_websocket_proxy(client_ws: WebSocket, path: str):
         parts = page_id.split("@")
         browser_id = parts[0]
         page_id = parts[1]
-        print(f"[CDP] browser_id={browser_id} page_id={page_id}")
+        logger.debug(f"[CDP] browser_id={browser_id} page_id={page_id}")
     else:
-        print(f"[CDP] Looking for page_id={page_id}")
+        logger.debug(f"[CDP] Looking for page_id={page_id}")
         browser_id = await find_browser_id(page_id)
         if browser_id:
-            print(f"[CDP] Found page {page_id} in browser {browser_id}")
+            logger.debug(f"[CDP] Found page {page_id} in browser {browser_id}")
         else:
-            print(f"[CDP] Page {page_id} not found in any browser")
+            logger.error(f"[CDP] Page {page_id} not found in any browser")
             await client_ws.close(code=4000, reason="Page not found in any browser")
             return
 
     remote_url = await get_page_websocket_url(browser_id, page_id)
     if not remote_url:
-        print(f"[CDP] Could not get websocket URL for page {page_id}")
+        logger.error(f"[CDP] Could not get websocket URL for page {page_id}")
         await client_ws.close(code=4502, reason="Failed to get page websocket URL")
         return
 
-    print(f"[CDP] Connecting to {remote_url}")
+    logger.info(f"[CDP] Connecting to {remote_url}")
     await websocket_proxy(client_ws, remote_url, browser_id)
-    print("[CDP] cdp_devtools_websocket_proxy exiting")
+    logger.info("[CDP] cdp_devtools_websocket_proxy exiting")
 
 
 @app.get("/live/{browser_id}")
