@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import logging
 import os
 import subprocess
 import sys
@@ -30,8 +29,10 @@ class Settings(BaseSettings):
     CONTAINER_HOST: str = ""
     GIT_REV: str = ""
     PORT: int = 8300
-    ENV: str = "development"
+    ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "INFO"
+    LOGFIRE_TOKEN: str = ""
+    SENTRY_DSN: str = ""
 
     @property
     def MASSIVE_PROXY_ENABLED(self) -> bool:
@@ -39,6 +40,11 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+from loguru import logger  # noqa: E402
+from observability import instrument_fastapi, setup_logging  # noqa: E402
+
+setup_logging()
 
 
 DOCKER_INTERNAL_HOST = "172.17.0.1"
@@ -121,12 +127,12 @@ async def kill_container(container_name: str):
 
 
 async def list_containers() -> list[str]:
-    logger.info("Retrieving the list of all containers...")
+    logger.debug("Retrieving the list of all containers...")
     try:
         result = run_podman(["container", "ls", "--format", "{{.Names}}"])
         if result.returncode == 0:
             containers = result.stdout.splitlines() if result.stdout else []
-            logger.info(f"All containers obtained. Total={len(containers)}")
+            logger.debug(f"All containers obtained. Total={len(containers)}")
             return containers
         else:
             raise Exception("Unable to list all containers")
@@ -157,8 +163,8 @@ async def configure_container(container_name: str, config: dict[str, Any]) -> No
     if proxy_url := config.get("proxy_url", ""):
         try:
             proxy_url = proxy_url.removeprefix("http://")
-            print(f"Configuring proxy with proxy_url: {proxy_url}")
-            print(f"Modifying tinyproxy.conf in {container_name}...")
+            logger.info(f"Configuring proxy with proxy_url: {proxy_url}")
+            logger.info(f"Modifying tinyproxy.conf in {container_name}...")
             run_podman([
                 "exec",
                 container_name,
@@ -214,6 +220,7 @@ def get_git_revision() -> str:
 
 
 app = FastAPI(title="Chrome Fleet")
+instrument_fastapi(app)
 
 
 @app.get("/health")
@@ -228,7 +235,7 @@ async def create_browser(browser_id: str):
     container_name = f"chromium-{browser_id}"
     try:
         await launch_container(settings.CONTAINER_IMAGE, container_name)
-        print(f"Browser {browser_id} is started.")
+        logger.info(f"Browser {browser_id} is started.")
         return {"container_name": container_name, "status": "created"}
     except Exception as e:
         detail = f"Unable to start browser {browser_id}!"
@@ -298,7 +305,7 @@ async def configure_browser(browser_id: str, config: dict[str, Any]):
                     proxy_username=settings.MASSIVE_PROXY_USERNAME,
                     proxy_password=settings.MASSIVE_PROXY_PASSWORD,
                 )
-                print(f"Generated MassiveProxy proxy_url for app {browser_id}: {massive_url}")
+                logger.debug(f"Generated MassiveProxy proxy_url for browser {browser_id}: {massive_url}")
                 config["proxy_url"] = massive_url
 
         await configure_container(container_name, config)
@@ -478,11 +485,11 @@ async def websocket_proxy(client_ws: WebSocket, remote_url: str, browser_id: str
 
 @app.websocket("/cdp/{browser_id}")
 async def cdp_browser_websocket_proxy(client_ws: WebSocket, browser_id: str):
-    logger.info(f"[CDP] Entered cdp_browser_websocket_proxy for browser_id={browser_id}")
+    logger.debug(f"[CDP] Entered cdp_browser_websocket_proxy for browser_id={browser_id}")
     container_name = f"chromium-{browser_id}"
 
     await client_ws.accept()
-    logger.info("[CDP] WebSocket accepted")
+    logger.debug("[CDP] WebSocket accepted")
 
     if not await container_exists(container_name):
         logger.error(f"[CDP] Container {container_name} not found")
@@ -512,14 +519,14 @@ async def cdp_browser_websocket_proxy(client_ws: WebSocket, browser_id: str):
 
     logger.info(f"[CDP] Client connected, proxying to {remote_url}")
     await websocket_proxy(client_ws, remote_url, browser_id)
-    logger.info("[CDP] cdp_browser_websocket_proxy exiting")
+    logger.debug("[CDP] cdp_browser_websocket_proxy exiting")
 
 
 @app.websocket("/devtools/{path:path}")
 async def cdp_devtools_websocket_proxy(client_ws: WebSocket, path: str):
-    logger.info(f"[CDP] Entered cdp_devtools_websocket_proxy for path={path}")
+    logger.debug(f"[CDP] Entered cdp_devtools_websocket_proxy for path={path}")
     await client_ws.accept()
-    logger.info("[CDP] WebSocket accepted")
+    logger.debug("[CDP] WebSocket accepted")
 
     parts = path.split("/")
     page_id = parts[-1] if parts else None
@@ -552,7 +559,7 @@ async def cdp_devtools_websocket_proxy(client_ws: WebSocket, path: str):
 
     logger.info(f"[CDP] Connecting to {remote_url}")
     await websocket_proxy(client_ws, remote_url, browser_id)
-    logger.info("[CDP] cdp_devtools_websocket_proxy exiting")
+    logger.debug("[CDP] cdp_devtools_websocket_proxy exiting")
 
 
 @app.get("/live/{browser_id}")

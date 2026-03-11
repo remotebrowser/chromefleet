@@ -6,13 +6,19 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.125.0",
+    "logfire[fastapi,httpx,loguru]>=3.0.0",
+    "loguru>=0.7.0",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.13.1",
     "pyright>=1.1.407",
+    "rich>=13.0.0",
     "ruff>=0.14.10",
+    "sentry-sdk[fastapi]>=2.0.0",
     "ty>=0.0.4",
     "uvicorn[standard]>=0.38.0",
     "websockets>=15.0.1",
+    "pyyaml>=6.0",
+    "httpx>=0.28.1",
 ]
 
 [project.optional-dependencies]
