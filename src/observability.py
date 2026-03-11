@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import logfire
 import sentry_sdk
@@ -67,7 +67,7 @@ def _setup_logger():
 
         return message.replace("[", r"\[").replace("{", "{{").replace("}", "}}").replace("<", r"\<")
 
-    handlers: list[HandlerConfig] = [
+    handlers = [
         {
             "sink": rich_handler,
             "format": _format_with_extra,
@@ -82,7 +82,7 @@ def _setup_logger():
         logfire_handler["level"] = _settings().LOG_LEVEL  # Match the log level with other handlers
         handlers.append(logfire_handler)
 
-    logger.configure(handlers=handlers)
+    logger.configure(handlers=cast("list[HandlerConfig]", handlers))
 
     # Override the loggers of external libraries to ensure consistent formatting
     for logger_name in (
