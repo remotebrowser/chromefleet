@@ -19,23 +19,20 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = [
-    "httpx>=0.27.0",
-    "pytest>=8.0.0",
-]
+dev = ["httpx>=0.27.0", "pytest>=8.0.0"]
 
 [tool.ruff]
 src = ["*.py"]
 exclude = [
-  "**/__pycache__",
-  "**/.pytest_cache",
-  "**/.venv",
-  "**/venv",
-  "**/htmlcov",
-  "**/*env/*",
-  "**/.git",
-  "**/*.yaml",
-  "**/*.yml",
+    "**/__pycache__",
+    "**/.pytest_cache",
+    "**/.venv",
+    "**/venv",
+    "**/htmlcov",
+    "**/*env/*",
+    "**/.git",
+    "**/*.yaml",
+    "**/*.yml",
 ]
 line-length = 120
 preview = true
@@ -71,6 +68,4 @@ strictSetInference = true
 strictParameterNoneValue = true
 
 [dependency-groups]
-dev = [
-    "pyinstaller>=6.19.0",
-]
+dev = ["pyinstaller>=6.19.0"]

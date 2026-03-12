@@ -7,9 +7,10 @@ import os
 import subprocess
 import sys
 import urllib.request
-import yaml
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
+
+import yaml
 
 if TYPE_CHECKING:
     from loguru import Record
@@ -23,10 +24,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocketState
 from loguru import logger
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from residential_proxy import Location, format_massive_proxy_url_from_location
 from rich.logging import RichHandler
 from websockets.exceptions import ConnectionClosed
-
-from residential_proxy import Location, format_massive_proxy_url_from_location
 
 
 class Settings(BaseSettings):
