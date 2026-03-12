@@ -137,13 +137,15 @@ async def launch_container(image_name: str, container_name: str) -> str:
     if sys.platform == "darwin":
         cmd.append("--privileged")
 
-    cmd.extend([
-        "-p",
-        "9222",
-        "-p",
-        "5900",
-        image_name,
-    ])
+    cmd.extend(
+        [
+            "-p",
+            "9222",
+            "-p",
+            "5900",
+            image_name,
+        ]
+    )
     try:
         result = run_podman(cmd)
         if result.returncode == 0 and result.stdout:
@@ -218,37 +220,45 @@ async def configure_container(container_name: str, config: dict[str, Any]) -> No
             proxy_url = proxy_url.removeprefix("http://")
             logger.debug(f"Configuring proxy with proxy_url: {proxy_url}")
             logger.info(f"Modifying tinyproxy.conf in {container_name}...")
-            run_podman([
-                "exec",
-                container_name,
-                "sed",
-                "-i",
-                "/^Upstream http/d",
-                "/app/tinyproxy.conf",
-            ])
-            run_podman([
-                "exec",
-                container_name,
-                "sed",
-                "-i",
-                f"$ a\\Upstream http {proxy_url}",
-                "/app/tinyproxy.conf",
-            ])
+            run_podman(
+                [
+                    "exec",
+                    container_name,
+                    "sed",
+                    "-i",
+                    "/^Upstream http/d",
+                    "/app/tinyproxy.conf",
+                ]
+            )
+            run_podman(
+                [
+                    "exec",
+                    container_name,
+                    "sed",
+                    "-i",
+                    f"$ a\\Upstream http {proxy_url}",
+                    "/app/tinyproxy.conf",
+                ]
+            )
             logger.info(f"Restarting tinyproxy in {container_name}...")
-            run_podman([
-                "exec",
-                container_name,
-                "sh",
-                "-c",
-                "pkill tinyproxy || true",
-            ])
-            run_podman([
-                "exec",
-                container_name,
-                "sh",
-                "-c",
-                "tinyproxy -d -c /app/tinyproxy.conf &",
-            ])
+            run_podman(
+                [
+                    "exec",
+                    container_name,
+                    "sh",
+                    "-c",
+                    "pkill tinyproxy || true",
+                ]
+            )
+            run_podman(
+                [
+                    "exec",
+                    container_name,
+                    "sh",
+                    "-c",
+                    "tinyproxy -d -c /app/tinyproxy.conf &",
+                ]
+            )
             logger.info(f"Proxy configured successfully in {container_name}.")
         except subprocess.CalledProcessError as e:
             raise Exception(f"Error configuring proxy: {e}")
