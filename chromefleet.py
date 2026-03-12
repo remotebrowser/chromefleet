@@ -18,6 +18,7 @@ from fastapi.websockets import WebSocketState
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from websockets.exceptions import ConnectionClosed
 
+from location_service import get_location_by_ip
 from residential_proxy import Location, format_massive_proxy_url_from_location
 
 
@@ -27,6 +28,8 @@ class Settings(BaseSettings):
     CONTAINER_IMAGE: str = "ghcr.io/remotebrowser/chromium-live"
     MASSIVE_PROXY_USERNAME: str = ""
     MASSIVE_PROXY_PASSWORD: str = ""
+    MAXMIND_ACCOUNT_ID: str = ""
+    MAXMIND_LICENSE_KEY: str = ""
     CONTAINER_HOST: str = ""
     GIT_REV: str = ""
     PORT: int = 8300
@@ -35,6 +38,10 @@ class Settings(BaseSettings):
     @property
     def MASSIVE_PROXY_ENABLED(self) -> bool:
         return bool(self.MASSIVE_PROXY_USERNAME and self.MASSIVE_PROXY_PASSWORD)
+
+    @property
+    def MAXMIND_ENABLED(self) -> bool:
+        return bool(self.MAXMIND_ACCOUNT_ID and self.MAXMIND_LICENSE_KEY)
 
 
 settings = Settings()
@@ -285,8 +292,32 @@ async def configure_browser(browser_id: str, config: dict[str, Any]):
         raise HTTPException(status_code=404, detail=detail)
     try:
         if settings.MASSIVE_PROXY_ENABLED:
-            location = Location(**config.get("location", {}))
-            if location:
+            location_dict = config.get("location", {})
+
+            # If no location provided but origin_ip is, resolve via MaxMind
+            if not location_dict and config.get("origin_ip") and settings.MAXMIND_ENABLED:
+                origin_ip = config["origin_ip"]
+                print(f"No location provided, resolving IP {origin_ip} via MaxMind...")
+                geo = get_location_by_ip(
+                    origin_ip,
+                    account_id=settings.MAXMIND_ACCOUNT_ID,
+                    license_key=settings.MAXMIND_LICENSE_KEY,
+                )
+                if geo:
+                    location_dict = {
+                        k: v
+                        for k, v in {
+                            "country": geo.get("country"),
+                            "state": geo.get("state"),
+                            "city": geo.get("city"),
+                            "postal_code": geo.get("postal_code"),
+                        }.items()
+                        if v
+                    }
+                    print(f"MaxMind resolved IP {origin_ip} to location: {location_dict}")
+
+            if location_dict:
+                location = Location(**location_dict)
                 massive_url = format_massive_proxy_url_from_location(
                     location,
                     proxy_session_id=browser_id,
