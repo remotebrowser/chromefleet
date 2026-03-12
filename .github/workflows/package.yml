@@ -20,7 +20,7 @@ jobs:
           version: "0.10.7"
 
       - name: Build executable
-        run: uv run --group dev pyinstaller --onefile --name chromefleet --add-data webui:webui chromefleet.py
+        run: uv run --group dev pyinstaller --onefile --name chromefleet --add-data src/webui:webui src/chromefleet.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

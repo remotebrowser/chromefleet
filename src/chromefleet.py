@@ -22,7 +22,7 @@ from residential_proxy import Location, format_massive_proxy_url_from_location
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_ignore_empty=True)
+    model_config = SettingsConfigDict(env_file=".env", env_ignore_empty=True, extra="ignore")
 
     CONTAINER_IMAGE: str = "ghcr.io/remotebrowser/chromium-live"
     MASSIVE_PROXY_USERNAME: str = ""
