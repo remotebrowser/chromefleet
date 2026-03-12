@@ -3,7 +3,7 @@
 **Requirements:** [Podman](https://podman.io) and [uv](https://docs.astral.sh/uv).
 
 ```bash
-uv run chromefleet.py
+uv run src/chromefleet.py
 ```
 
 For Dokku deployment, see the [deployment guide](deploy-dokku.md).

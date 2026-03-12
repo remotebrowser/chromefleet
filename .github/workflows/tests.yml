@@ -22,7 +22,7 @@ jobs:
         run: uv sync --all-extras --dev
 
       - name: Run chromefleet
-        run: uv run chromefleet.py &> chromefleet.log &
+        run: uv run src/chromefleet.py &> chromefleet.log &
 
       - name: Wait for health check
         run: while ! curl -s 'http://localhost:8300/health' | grep 'OK'; do sleep 1; done

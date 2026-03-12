@@ -14,8 +14,7 @@ ENV VENV_PATH="/app/.venv"
 ENV UV_FROZEN=1
 RUN uv sync --no-dev --no-install-workspace
 
-COPY chromefleet.py residential_proxy.py /app/
-COPY webui/* /app/webui/
+COPY src/ /app/
 RUN uv sync --no-dev
 
 ENV PATH="/app/.venv/bin:$PATH"
