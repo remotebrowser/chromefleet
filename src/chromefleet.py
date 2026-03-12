@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from loguru import Record
 
 import logfire
+import sentry_sdk
 import uvicorn
 import websockets
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -26,6 +27,9 @@ from loguru import logger
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from residential_proxy import Location, format_massive_proxy_url_from_location
 from rich.logging import RichHandler
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.logging import LoggingIntegration
+from sentry_sdk.integrations.starlette import StarletteIntegration
 from websockets.exceptions import ConnectionClosed
 
 
@@ -42,6 +46,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "INFO"
     LOGFIRE_TOKEN: str = ""
+    SENTRY_DSN: str = ""
 
     @property
     def MASSIVE_PROXY_ENABLED(self) -> bool:
@@ -49,6 +54,30 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def _setup_sentry() -> None:
+    if not settings.SENTRY_DSN:
+        logger.warning("Sentry is disabled, no SENTRY_DSN provided")
+        return
+
+    logger.info("Initializing Sentry")
+    sentry_sdk.init(
+        dsn=settings.SENTRY_DSN,
+        environment=settings.ENVIRONMENT,
+        integrations=[
+            StarletteIntegration(
+                transaction_style="endpoint",
+                failed_request_status_codes={403, *range(500, 599)},
+            ),
+            FastApiIntegration(
+                transaction_style="endpoint",
+                failed_request_status_codes={403, *range(500, 599)},
+            ),
+            LoggingIntegration(level=logging.getLevelNamesMapping()[settings.LOG_LEVEL]),
+        ],
+        send_default_pii=True,
+    )
 
 
 def setup_logging() -> None:
@@ -89,6 +118,8 @@ def setup_logging() -> None:
 
     if settings.LOGFIRE_TOKEN:
         logger.info("Logfire initialized")
+
+    _setup_sentry()
 
     for lib_logger_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
         lib_logger = logging.getLogger(lib_logger_name)
@@ -285,6 +316,11 @@ def get_git_revision() -> str:
 app = FastAPI(title="Chrome Fleet")
 if settings.LOGFIRE_TOKEN:
     logfire.instrument_fastapi(app, capture_headers=True, excluded_urls="/health")
+
+
+@app.get("/sentry-debug")
+async def divide_by_zero():
+    return 1 / 0
 
 
 @app.get("/health")
