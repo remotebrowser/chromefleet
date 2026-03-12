@@ -466,24 +466,24 @@ def patch_cdp_target(message: str, browser_id: str) -> str:
         return message
 
     if isinstance(data, dict):
-        if data.get("method") == "Target.targetCreated":  # type: ignore[reportUnknownMemberAccess]
-            params = data.get("params")  # type: ignore[reportUnknownVariableType]
+        if data.get("method") == "Target.targetCreated":  # pyright: ignore[reportUnknownMemberType]
+            params = data.get("params")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
             if isinstance(params, dict):
-                target_info = params.get("targetInfo")  # type: ignore[reportUnknownVariableType]
+                target_info = params.get("targetInfo")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
                 if isinstance(target_info, dict) and "targetId" in target_info:
-                    target_info["targetId"] = browser_id + "@" + str(target_info["targetId"])  # type: ignore[reportUnknownArgumentType]
+                    target_info["targetId"] = browser_id + "@" + str(target_info["targetId"])  # pyright: ignore[reportUnknownArgumentType]
                     return json.dumps(data)
-        elif data.get("method") == "Target.getTargetInfo":  # type: ignore[reportUnknownMemberAccess]
-            params = data.get("params")  # type: ignore[reportUnknownVariableType]
+        elif data.get("method") == "Target.getTargetInfo":  # pyright: ignore[reportUnknownMemberType]
+            params = data.get("params")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
             if isinstance(params, dict) and "targetId" in params:
-                target_id = str(params["targetId"])  # type: ignore[reportUnknownArgumentType]
+                target_id = str(params["targetId"])  # pyright: ignore[reportUnknownArgumentType]
                 if "@" in target_id:
                     params["targetId"] = target_id.split("@", 1)[1]
                     return json.dumps(data)
         elif "result" in data:
-            result = data.get("result")  # type: ignore[reportUnknownVariableType]
+            result = data.get("result")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
             if isinstance(result, dict) and "targetId" in result:
-                result["targetId"] = browser_id + "@" + str(result["targetId"])  # type: ignore[reportUnknownArgumentType]
+                result["targetId"] = browser_id + "@" + str(result["targetId"])  # pyright: ignore[reportUnknownArgumentType]
                 return json.dumps(data)
 
     return message
