@@ -7,9 +7,14 @@ import os
 import subprocess
 import sys
 import urllib.request
+import yaml
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+if TYPE_CHECKING:
+    from loguru import Record
+
+import logfire
 import uvicorn
 import websockets
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -34,7 +39,9 @@ class Settings(BaseSettings):
     GIT_REV: str = ""
     PORT: int = 8300
     ENV: str = "development"
+    ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "INFO"
+    LOGFIRE_TOKEN: str = ""
 
     @property
     def MASSIVE_PROXY_ENABLED(self) -> bool:
@@ -46,10 +53,45 @@ settings = Settings()
 
 def setup_logging() -> None:
     rich_handler = RichHandler(rich_tracebacks=True, log_time_format="%X", markup=True)
-    logger.remove()
-    logger.add(rich_handler, format="{message}", level=settings.LOG_LEVEL, backtrace=True, diagnose=True)
-    for logger_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
-        lib_logger = logging.getLogger(logger_name)
+
+    def _format_with_extra(record: "Record") -> str:
+        message = record["message"]
+        if record["extra"]:
+            extra = yaml.dump(record["extra"], sort_keys=False, default_flow_style=False)
+            message = f"{message}\n{extra}"
+        return message.replace("[", r"\[").replace("{", "{{").replace("}", "}}").replace("<", r"\<")
+
+    handlers: list[Any] = [
+        {
+            "sink": rich_handler,
+            "format": _format_with_extra,
+            "level": settings.LOG_LEVEL,
+            "backtrace": True,
+            "diagnose": True,
+        }
+    ]
+
+    if settings.LOGFIRE_TOKEN:
+        logfire.configure(
+            service_name="chromefleet",
+            send_to_logfire="if-token-present",
+            token=settings.LOGFIRE_TOKEN,
+            environment=settings.ENVIRONMENT,
+            distributed_tracing=True,
+            console=False,
+            scrubbing=False,
+        )
+        logfire_handler = logfire.loguru_handler()
+        logfire_handler["level"] = settings.LOG_LEVEL
+        handlers.append(logfire_handler)
+
+    logger.configure(handlers=handlers)
+
+    if settings.LOGFIRE_TOKEN:
+        logger.info("Logfire initialized")
+
+    for lib_logger_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
+        lib_logger = logging.getLogger(lib_logger_name)
         lib_logger.setLevel(settings.LOG_LEVEL)
         lib_logger.handlers.clear()
         lib_logger.addHandler(rich_handler)
@@ -231,6 +273,8 @@ def get_git_revision() -> str:
 
 
 app = FastAPI(title="Chrome Fleet")
+if settings.LOGFIRE_TOKEN:
+    logfire.instrument_fastapi(app, capture_headers=True, excluded_urls="/health")
 
 
 @app.get("/health")

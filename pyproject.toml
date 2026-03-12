@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.125.0",
+    "logfire[fastapi,loguru]>=3.0.0",
     "loguru>=0.7.0",
     "rich>=13.0.0",
     "pydantic>=2.12.5",
