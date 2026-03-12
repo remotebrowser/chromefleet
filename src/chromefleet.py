@@ -108,7 +108,9 @@ async def launch_container(image_name: str, container_name: str) -> str:
             container_id = result.stdout.strip()
             cdp_port = await get_host_port(container_name, 9222)
             vnc_port = await get_host_port(container_name, 5900)
-            logger.info(f"Container started: name={container_name} id={container_id} cdp_port={cdp_port} vnc_port={vnc_port}")
+            logger.info(
+                f"Container started: name={container_name} id={container_id} cdp_port={cdp_port} vnc_port={vnc_port}"
+            )
             return container_id
         raise Exception(f"Unable to launch Chromium for {container_name}")
     except subprocess.CalledProcessError as e:
