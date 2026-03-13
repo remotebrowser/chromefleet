@@ -324,11 +324,6 @@ if settings.LOGFIRE_TOKEN:
     logfire.instrument_fastapi(app, capture_headers=True, excluded_urls="/health")
 
 
-@app.get("/sentry-debug")
-async def divide_by_zero():
-    return 1 / 0
-
-
 @app.get("/health")
 async def health() -> str:
     git_rev = get_git_revision()[:10]
