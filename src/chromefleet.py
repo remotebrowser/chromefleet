@@ -14,6 +14,7 @@ if getattr(sys, "frozen", False):
     os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "1")
 import urllib.request
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
@@ -31,12 +32,16 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocketState
 from loguru import logger
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings.sources.base import PydanticBaseSettingsSource
+from pydantic_settings.sources.providers.json import JsonConfigSettingsSource
 from residential_proxy import Location, format_massive_proxy_url_from_location
 from rich.logging import RichHandler
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.integrations.starlette import StarletteIntegration
 from websockets.exceptions import ConnectionClosed
+
+CONFIG_FILE: str = os.getenv("CONFIG_FILE", "/etc/chromefleet/config.json")
 
 
 class Settings(BaseSettings):
@@ -58,7 +63,34 @@ class Settings(BaseSettings):
     def MASSIVE_PROXY_ENABLED(self) -> bool:
         return bool(self.MASSIVE_PROXY_USERNAME and self.MASSIVE_PROXY_PASSWORD)
 
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (
+            env_settings,
+            dotenv_settings,
+            JsonConfigSettingsSource(settings_cls, json_file=CONFIG_FILE),
+            file_secret_settings,
+        )
 
+
+def _ensure_config_file() -> None:
+    path = Path(CONFIG_FILE)
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        defaults = Settings().model_dump(
+            include={"MASSIVE_PROXY_USERNAME", "MASSIVE_PROXY_PASSWORD"}
+        )
+        path.write_text(json.dumps(defaults, indent=2))
+
+
+_ensure_config_file()
 settings = Settings()
 
 
@@ -328,6 +360,7 @@ if settings.LOGFIRE_TOKEN:
 async def health() -> str:
     git_rev = get_git_revision()[:10]
     return f"OK {int(datetime.now().timestamp())} GIT_REV: {git_rev}"
+
 
 
 @app.post("/api/v1/browsers/{browser_id}")
