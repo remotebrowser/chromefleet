@@ -18,10 +18,15 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocketState
 from loguru import logger
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings.sources.base import PydanticBaseSettingsSource
+from pydantic_settings.sources.providers.json import JsonConfigSettingsSource
 from rich.logging import RichHandler
 from websockets.exceptions import ConnectionClosed
 
 from residential_proxy import Location, format_massive_proxy_url_from_location
+
+
+CONFIG_FILE: str = os.getenv("CONFIG_FILE", "/run/secrets/config.json")
 
 
 class Settings(BaseSettings):
@@ -39,6 +44,22 @@ class Settings(BaseSettings):
     @property
     def MASSIVE_PROXY_ENABLED(self) -> bool:
         return bool(self.MASSIVE_PROXY_USERNAME and self.MASSIVE_PROXY_PASSWORD)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (
+            env_settings,
+            dotenv_settings,
+            JsonConfigSettingsSource(settings_cls, json_file=CONFIG_FILE),
+            file_secret_settings,
+        )
 
 
 settings = Settings()
@@ -237,6 +258,17 @@ app = FastAPI(title="Chrome Fleet")
 async def health() -> str:
     git_rev = get_git_revision()[:10]
     return f"OK {int(datetime.now().timestamp())} GIT_REV: {git_rev}"
+
+
+@app.post("/internal/config/refresh")
+async def refresh_config() -> dict[str, str]:
+    try:
+        settings.__init__()
+    except Exception as e:
+        logger.error(f"Config reload failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Config reload failed: {e}")
+    logger.info(f"Config reloaded. MASSIVE_PROXY_ENABLED={settings.MASSIVE_PROXY_ENABLED}")
+    return {"status": "reloaded", "config_file": CONFIG_FILE}
 
 
 @app.post("/api/v1/browsers/{browser_id}")
