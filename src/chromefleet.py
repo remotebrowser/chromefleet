@@ -6,6 +6,12 @@ import logging
 import os
 import subprocess
 import sys
+
+# Logfire registers a pydantic plugin via entry points that calls inspect.getsource()
+# at import time, which fails in a PyInstaller frozen binary. Disable pydantic plugins
+# when frozen so pydantic skips the entry point entirely.
+if getattr(sys, "frozen", False):
+    os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "1")
 import urllib.request
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
