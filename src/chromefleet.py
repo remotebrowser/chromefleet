@@ -6,6 +6,12 @@ import logging
 import os
 import subprocess
 import sys
+
+# Logfire registers a pydantic plugin via entry points that calls inspect.getsource()
+# at import time, which fails in a PyInstaller frozen binary. Disable pydantic plugins
+# when frozen so pydantic skips the entry point entirely.
+if getattr(sys, "frozen", False):
+    os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "1")
 import urllib.request
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -15,6 +21,7 @@ import yaml
 if TYPE_CHECKING:
     from loguru import Record
 
+import logfire
 import uvicorn
 import websockets
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -70,10 +77,7 @@ def setup_logging() -> None:
         }
     ]
 
-    frozen = getattr(sys, "frozen", False)
-    if settings.LOGFIRE_TOKEN and not frozen:
-        import logfire
-
+    if settings.LOGFIRE_TOKEN:
         logfire.configure(
             service_name="chromefleet",
             send_to_logfire="if-token-present",
@@ -89,7 +93,7 @@ def setup_logging() -> None:
 
     logger.configure(handlers=handlers)
 
-    if settings.LOGFIRE_TOKEN and not frozen:
+    if settings.LOGFIRE_TOKEN:
         logger.info("Logfire initialized")
 
     for lib_logger_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
@@ -285,9 +289,7 @@ def get_git_revision() -> str:
 
 
 app = FastAPI(title="Chrome Fleet")
-if settings.LOGFIRE_TOKEN and not getattr(sys, "frozen", False):
-    import logfire
-
+if settings.LOGFIRE_TOKEN:
     logfire.instrument_fastapi(app, capture_headers=True, excluded_urls="/health")
 
 
