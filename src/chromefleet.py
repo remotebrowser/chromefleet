@@ -14,6 +14,7 @@ if getattr(sys, "frozen", False):
     os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "1")
 import urllib.request
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
@@ -40,7 +41,7 @@ from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.integrations.starlette import StarletteIntegration
 from websockets.exceptions import ConnectionClosed
 
-CONFIG_FILE: str = os.getenv("CONFIG_FILE", "/run/secrets/config.json")
+CONFIG_FILE: str = os.getenv("CONFIG_FILE", "/etc/chromefleet/config.json")
 
 
 class Settings(BaseSettings):
@@ -79,6 +80,17 @@ class Settings(BaseSettings):
         )
 
 
+def _ensure_config_file() -> None:
+    path = Path(CONFIG_FILE)
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        defaults = Settings().model_dump(
+            include={"MASSIVE_PROXY_USERNAME", "MASSIVE_PROXY_PASSWORD"}
+        )
+        path.write_text(json.dumps(defaults, indent=2))
+
+
+_ensure_config_file()
 settings = Settings()
 
 
@@ -349,16 +361,6 @@ async def health() -> str:
     git_rev = get_git_revision()[:10]
     return f"OK {int(datetime.now().timestamp())} GIT_REV: {git_rev}"
 
-
-@app.post("/internal/config/refresh")
-async def refresh_config() -> dict[str, str]:
-    try:
-        settings.__init__()
-    except Exception as e:
-        logger.error(f"Config reload failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Config reload failed: {e}")
-    logger.info(f"Config reloaded. MASSIVE_PROXY_ENABLED={settings.MASSIVE_PROXY_ENABLED}")
-    return {"status": "reloaded", "config_file": CONFIG_FILE}
 
 
 @app.post("/api/v1/browsers/{browser_id}")
