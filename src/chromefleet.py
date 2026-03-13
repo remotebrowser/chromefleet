@@ -6,10 +6,23 @@ import logging
 import os
 import subprocess
 import sys
+
+# Logfire registers a pydantic plugin via entry points that calls inspect.getsource()
+# at import time, which fails in a PyInstaller frozen binary. Disable pydantic plugins
+# when frozen so pydantic skips the entry point entirely.
+if getattr(sys, "frozen", False):
+    os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "1")
 import urllib.request
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+import yaml
+
+if TYPE_CHECKING:
+    from loguru import Record
+
+import logfire
+import sentry_sdk
 import uvicorn
 import websockets
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -20,11 +33,12 @@ from loguru import logger
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources.base import PydanticBaseSettingsSource
 from pydantic_settings.sources.providers.json import JsonConfigSettingsSource
-from rich.logging import RichHandler
-from websockets.exceptions import ConnectionClosed
-
 from residential_proxy import Location, format_massive_proxy_url_from_location
-
+from rich.logging import RichHandler
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.logging import LoggingIntegration
+from sentry_sdk.integrations.starlette import StarletteIntegration
+from websockets.exceptions import ConnectionClosed
 
 CONFIG_FILE: str = os.getenv("CONFIG_FILE", "/run/secrets/config.json")
 
@@ -39,7 +53,10 @@ class Settings(BaseSettings):
     GIT_REV: str = ""
     PORT: int = 8300
     ENV: str = "development"
+    ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "INFO"
+    LOGFIRE_TOKEN: str = ""
+    SENTRY_DSN: str = ""
 
     @property
     def MASSIVE_PROXY_ENABLED(self) -> bool:
@@ -65,12 +82,73 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
+def _setup_sentry() -> None:
+    if not settings.SENTRY_DSN:
+        logger.warning("Sentry is disabled, no SENTRY_DSN provided")
+        return
+
+    logger.info("Initializing Sentry")
+    sentry_sdk.init(
+        dsn=settings.SENTRY_DSN,
+        environment=settings.ENVIRONMENT,
+        integrations=[
+            StarletteIntegration(
+                transaction_style="endpoint",
+                failed_request_status_codes={403, *range(500, 599)},
+            ),
+            FastApiIntegration(
+                transaction_style="endpoint",
+                failed_request_status_codes={403, *range(500, 599)},
+            ),
+            LoggingIntegration(level=logging.getLevelNamesMapping()[settings.LOG_LEVEL]),
+        ],
+        send_default_pii=True,
+    )
+
+
 def setup_logging() -> None:
     rich_handler = RichHandler(rich_tracebacks=True, log_time_format="%X", markup=True)
-    logger.remove()
-    logger.add(rich_handler, format="{message}", level=settings.LOG_LEVEL, backtrace=True, diagnose=True)
-    for logger_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
-        lib_logger = logging.getLogger(logger_name)
+
+    def _format_with_extra(record: "Record") -> str:
+        message = record["message"]
+        if record["extra"]:
+            extra = yaml.dump(record["extra"], sort_keys=False, default_flow_style=False)
+            message = f"{message}\n{extra}"
+        return message.replace("[", r"\[").replace("{", "{{").replace("}", "}}").replace("<", r"\<")
+
+    handlers: list[Any] = [
+        {
+            "sink": rich_handler,
+            "format": _format_with_extra,
+            "level": settings.LOG_LEVEL,
+            "backtrace": True,
+            "diagnose": True,
+        }
+    ]
+
+    if settings.LOGFIRE_TOKEN:
+        logfire.configure(
+            service_name="chromefleet",
+            send_to_logfire="if-token-present",
+            token=settings.LOGFIRE_TOKEN,
+            environment=settings.ENVIRONMENT,
+            distributed_tracing=True,
+            console=False,
+            scrubbing=False,
+        )
+        logfire_handler = logfire.loguru_handler()
+        logfire_handler["level"] = settings.LOG_LEVEL
+        handlers.append(logfire_handler)
+
+    logger.configure(handlers=handlers)
+
+    if settings.LOGFIRE_TOKEN:
+        logger.info("Logfire initialized")
+
+    _setup_sentry()
+
+    for lib_logger_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
+        lib_logger = logging.getLogger(lib_logger_name)
         lib_logger.setLevel(settings.LOG_LEVEL)
         lib_logger.handlers.clear()
         lib_logger.addHandler(rich_handler)
@@ -116,13 +194,15 @@ async def launch_container(image_name: str, container_name: str) -> str:
     if sys.platform == "darwin":
         cmd.append("--privileged")
 
-    cmd.extend([
-        "-p",
-        "9222",
-        "-p",
-        "5900",
-        image_name,
-    ])
+    cmd.extend(
+        [
+            "-p",
+            "9222",
+            "-p",
+            "5900",
+            image_name,
+        ]
+    )
     try:
         result = run_podman(cmd)
         if result.returncode == 0 and result.stdout:
@@ -197,37 +277,45 @@ async def configure_container(container_name: str, config: dict[str, Any]) -> No
             proxy_url = proxy_url.removeprefix("http://")
             logger.debug(f"Configuring proxy with proxy_url: {proxy_url}")
             logger.info(f"Modifying tinyproxy.conf in {container_name}...")
-            run_podman([
-                "exec",
-                container_name,
-                "sed",
-                "-i",
-                "/^Upstream http/d",
-                "/app/tinyproxy.conf",
-            ])
-            run_podman([
-                "exec",
-                container_name,
-                "sed",
-                "-i",
-                f"$ a\\Upstream http {proxy_url}",
-                "/app/tinyproxy.conf",
-            ])
+            run_podman(
+                [
+                    "exec",
+                    container_name,
+                    "sed",
+                    "-i",
+                    "/^Upstream http/d",
+                    "/app/tinyproxy.conf",
+                ]
+            )
+            run_podman(
+                [
+                    "exec",
+                    container_name,
+                    "sed",
+                    "-i",
+                    f"$ a\\Upstream http {proxy_url}",
+                    "/app/tinyproxy.conf",
+                ]
+            )
             logger.info(f"Restarting tinyproxy in {container_name}...")
-            run_podman([
-                "exec",
-                container_name,
-                "sh",
-                "-c",
-                "pkill tinyproxy || true",
-            ])
-            run_podman([
-                "exec",
-                container_name,
-                "sh",
-                "-c",
-                "tinyproxy -d -c /app/tinyproxy.conf &",
-            ])
+            run_podman(
+                [
+                    "exec",
+                    container_name,
+                    "sh",
+                    "-c",
+                    "pkill tinyproxy || true",
+                ]
+            )
+            run_podman(
+                [
+                    "exec",
+                    container_name,
+                    "sh",
+                    "-c",
+                    "tinyproxy -d -c /app/tinyproxy.conf &",
+                ]
+            )
             logger.info(f"Proxy configured successfully in {container_name}.")
         except subprocess.CalledProcessError as e:
             raise Exception(f"Error configuring proxy: {e}")
@@ -252,6 +340,8 @@ def get_git_revision() -> str:
 
 
 app = FastAPI(title="Chrome Fleet")
+if settings.LOGFIRE_TOKEN:
+    logfire.instrument_fastapi(app, capture_headers=True, excluded_urls="/health")
 
 
 @app.get("/health")
@@ -444,24 +534,24 @@ def patch_cdp_target(message: str, browser_id: str) -> str:
         return message
 
     if isinstance(data, dict):
-        if data.get("method") == "Target.targetCreated":  # type: ignore[reportUnknownMemberAccess]
-            params = data.get("params")  # type: ignore[reportUnknownVariableType]
+        if data.get("method") == "Target.targetCreated":  # pyright: ignore[reportUnknownMemberType]
+            params = data.get("params")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
             if isinstance(params, dict):
-                target_info = params.get("targetInfo")  # type: ignore[reportUnknownVariableType]
+                target_info = params.get("targetInfo")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
                 if isinstance(target_info, dict) and "targetId" in target_info:
-                    target_info["targetId"] = browser_id + "@" + str(target_info["targetId"])  # type: ignore[reportUnknownArgumentType]
+                    target_info["targetId"] = browser_id + "@" + str(target_info["targetId"])  # pyright: ignore[reportUnknownArgumentType]
                     return json.dumps(data)
-        elif data.get("method") == "Target.getTargetInfo":  # type: ignore[reportUnknownMemberAccess]
-            params = data.get("params")  # type: ignore[reportUnknownVariableType]
+        elif data.get("method") == "Target.getTargetInfo":  # pyright: ignore[reportUnknownMemberType]
+            params = data.get("params")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
             if isinstance(params, dict) and "targetId" in params:
-                target_id = str(params["targetId"])  # type: ignore[reportUnknownArgumentType]
+                target_id = str(params["targetId"])  # pyright: ignore[reportUnknownArgumentType]
                 if "@" in target_id:
                     params["targetId"] = target_id.split("@", 1)[1]
                     return json.dumps(data)
         elif "result" in data:
-            result = data.get("result")  # type: ignore[reportUnknownVariableType]
+            result = data.get("result")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
             if isinstance(result, dict) and "targetId" in result:
-                result["targetId"] = browser_id + "@" + str(result["targetId"])  # type: ignore[reportUnknownArgumentType]
+                result["targetId"] = browser_id + "@" + str(result["targetId"])  # pyright: ignore[reportUnknownArgumentType]
                 return json.dumps(data)
 
     return message

@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.125.0",
+    "logfire[fastapi,loguru]>=3.0.0",
     "loguru>=0.7.0",
     "rich>=13.0.0",
     "pydantic>=2.12.5",
@@ -14,30 +15,27 @@ dependencies = [
     "ruff>=0.14.10",
     "ty>=0.0.4",
     "uvicorn[standard]>=0.38.0",
+    "sentry-sdk[fastapi]>=2.0.0",
     "websockets>=15.0.1",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "httpx>=0.27.0",
-    "pytest>=8.0.0",
-]
+dev = ["httpx>=0.27.0", "pytest>=8.0.0"]
 
 [tool.ruff]
 src = ["*.py"]
 exclude = [
-  "**/__pycache__",
-  "**/.pytest_cache",
-  "**/.venv",
-  "**/venv",
-  "**/htmlcov",
-  "**/*env/*",
-  "**/.git",
-  "**/*.yaml",
-  "**/*.yml",
+    "**/__pycache__",
+    "**/.pytest_cache",
+    "**/.venv",
+    "**/venv",
+    "**/htmlcov",
+    "**/*env/*",
+    "**/.git",
+    "**/*.yaml",
+    "**/*.yml",
 ]
 line-length = 120
-preview = true
 
 [tool.ruff.lint.isort]
 combine-as-imports = true
@@ -70,6 +68,4 @@ strictSetInference = true
 strictParameterNoneValue = true
 
 [dependency-groups]
-dev = [
-    "pyinstaller>=6.19.0",
-]
+dev = ["pyinstaller>=6.19.0"]
