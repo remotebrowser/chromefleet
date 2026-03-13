@@ -15,7 +15,6 @@ import yaml
 if TYPE_CHECKING:
     from loguru import Record
 
-import logfire
 import uvicorn
 import websockets
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -71,7 +70,10 @@ def setup_logging() -> None:
         }
     ]
 
-    if settings.LOGFIRE_TOKEN:
+    frozen = getattr(sys, "frozen", False)
+    if settings.LOGFIRE_TOKEN and not frozen:
+        import logfire
+
         logfire.configure(
             service_name="chromefleet",
             send_to_logfire="if-token-present",
@@ -87,7 +89,7 @@ def setup_logging() -> None:
 
     logger.configure(handlers=handlers)
 
-    if settings.LOGFIRE_TOKEN:
+    if settings.LOGFIRE_TOKEN and not frozen:
         logger.info("Logfire initialized")
 
     for lib_logger_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
@@ -283,7 +285,9 @@ def get_git_revision() -> str:
 
 
 app = FastAPI(title="Chrome Fleet")
-if settings.LOGFIRE_TOKEN:
+if settings.LOGFIRE_TOKEN and not getattr(sys, "frozen", False):
+    import logfire
+
     logfire.instrument_fastapi(app, capture_headers=True, excluded_urls="/health")
 
 
