@@ -408,11 +408,17 @@ async def configure_browser(browser_id: str, request: Request, config: dict[str,
         has_location_in_body = bool(config.get("location"))
 
         if origin_ip and not settings.MAXMIND_ENABLED:
-            logger.warning(f"x-origin-ip={origin_ip} provided but MaxMind is not configured (missing MAXMIND_ACCOUNT_ID/MAXMIND_LICENSE_KEY) — location will not be resolved")
+            logger.warning(
+                f"x-origin-ip={origin_ip} provided but MaxMind is not configured (missing MAXMIND_ACCOUNT_ID/MAXMIND_LICENSE_KEY) — location will not be resolved"
+            )
         if origin_ip and not settings.MASSIVE_PROXY_ENABLED:
-            logger.warning(f"x-origin-ip={origin_ip} provided but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — proxy will not be set")
+            logger.warning(
+                f"x-origin-ip={origin_ip} provided but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — proxy will not be set"
+            )
         if has_location_in_body and not settings.MASSIVE_PROXY_ENABLED:
-            logger.warning("location provided in config but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — location will be ignored")
+            logger.warning(
+                "location provided in config but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — location will be ignored"
+            )
 
         if settings.MASSIVE_PROXY_ENABLED:
             location_data: dict[str, Any] | None = None
