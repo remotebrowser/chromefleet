@@ -20,7 +20,6 @@ class Location(BaseModel):
 
     @model_validator(mode="after")
     def validate_and_normalize(self) -> Self:
-
         self.country = (str(self.country) if self.country else "").lower().strip()
         self.state = (str(self.state) if self.state else "").lower().strip().replace(" ", "_")
         self.city = (str(self.city) if self.city else "").lower().strip().replace(" ", "_")
@@ -61,7 +60,11 @@ def format_massive_proxy_url_from_location(
     username_template = f"{proxy_username}"
     if location.country:
         username_template += f"-country-{location.country}"
-    if location.postal_code:
+    if location.state:
+        username_template += f"-subdivision-{location.state.upper()}"
+    elif (
+        location.postal_code
+    ):  # don't want to unnecessarily constrain the pool size by adding postal code if state is already specified
         username_template += f"-zipcode-{location.postal_code}"
     # max ttl is 240 mins: https://docs.joinmassive.com/residential/sticky-sessions
     return f"http://{username_template}-session-{proxy_session_id}-sessionttl-240:{proxy_password}@network.joinmassive.com:65534"
