@@ -31,6 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocketState
 from loguru import logger
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from location_service import get_location_by_ip
 from residential_proxy import Location, format_massive_proxy_url_from_location
 from rich.logging import RichHandler
 from sentry_sdk.integrations.fastapi import FastApiIntegration
@@ -53,10 +54,16 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOGFIRE_TOKEN: str = ""
     SENTRY_DSN: str = ""
+    MAXMIND_ACCOUNT_ID: int = 0
+    MAXMIND_LICENSE_KEY: str = ""
 
     @property
     def MASSIVE_PROXY_ENABLED(self) -> bool:
         return bool(self.MASSIVE_PROXY_USERNAME and self.MASSIVE_PROXY_PASSWORD)
+
+    @property
+    def MAXMIND_ENABLED(self) -> bool:
+        return bool(self.MAXMIND_ACCOUNT_ID and self.MAXMIND_LICENSE_KEY)
 
 
 settings = Settings()
@@ -389,7 +396,7 @@ async def list_browsers():
 
 
 @app.post("/api/v1/browsers/{browser_id}/configure")
-async def configure_browser(browser_id: str, config: dict[str, Any]):
+async def configure_browser(browser_id: str, request: Request, config: dict[str, Any]):
     logger.info(f"Configuring browser {browser_id} with config {config}...")
     container_name = f"chromium-{browser_id}"
     if not await container_exists(container_name):
@@ -397,9 +404,34 @@ async def configure_browser(browser_id: str, config: dict[str, Any]):
         logger.warning(detail)
         raise HTTPException(status_code=404, detail=detail)
     try:
+        origin_ip = request.headers.get("x-origin-ip")
+        has_location_in_body = bool(config.get("location"))
+
+        if origin_ip and not settings.MAXMIND_ENABLED:
+            logger.warning(f"x-origin-ip={origin_ip} provided but MaxMind is not configured (missing MAXMIND_ACCOUNT_ID/MAXMIND_LICENSE_KEY) — location will not be resolved")
+        if origin_ip and not settings.MASSIVE_PROXY_ENABLED:
+            logger.warning(f"x-origin-ip={origin_ip} provided but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — proxy will not be set")
+        if has_location_in_body and not settings.MASSIVE_PROXY_ENABLED:
+            logger.warning("location provided in config but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — location will be ignored")
+
         if settings.MASSIVE_PROXY_ENABLED:
-            location = Location(**config.get("location", {}))
-            if location:
+            location_data: dict[str, Any] | None = None
+
+            if origin_ip:
+                if settings.MAXMIND_ENABLED:
+                    logger.debug(f"Looking up location for x-origin-ip={origin_ip}")
+                    geo = await get_location_by_ip(origin_ip, settings.MAXMIND_ACCOUNT_ID, settings.MAXMIND_LICENSE_KEY)
+                    if geo:
+                        logger.info(f"MaxMind resolved {origin_ip} -> {geo}")
+                        location_data = {k: v for k, v in geo.items() if v is not None}
+                    else:
+                        logger.warning(f"MaxMind returned no location for x-origin-ip={origin_ip}")
+
+            if location_data is None and has_location_in_body:
+                location_data = dict(config["location"])
+
+            if location_data:
+                location = Location(**location_data)
                 massive_url = format_massive_proxy_url_from_location(
                     location,
                     proxy_session_id=browser_id,
