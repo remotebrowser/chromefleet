@@ -494,7 +494,8 @@ async def configure_remote_browser(
             logger.debug(f"Generated MassiveProxy proxy_url for browser {browser_id}: {massive_url}")
             config["proxy_url"] = massive_url
     applying_proxy = bool(config.get("proxy_url"))
-    ip_before = await get_container_public_ip(container_name) if applying_proxy else None
+    ip_before = await get_container_public_ip(container_name)
+    logger.debug(f"Browser {browser_id} IP before applying config: {ip_before}")
 
     await configure_container(container_name, config)
 
