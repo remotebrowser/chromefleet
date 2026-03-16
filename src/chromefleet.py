@@ -29,9 +29,9 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocketState
+from location_service import get_location_by_ip
 from loguru import logger
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from location_service import get_location_by_ip
 from residential_proxy import Location, format_massive_proxy_url_from_location
 from rich.logging import RichHandler
 from sentry_sdk.integrations.fastapi import FastApiIntegration
@@ -395,6 +395,48 @@ async def list_browsers():
         raise HTTPException(status_code=500, detail=detail)
 
 
+async def get_container_public_ip(container_name: str, *, retries: int = 5, retry_delay: float = 2.0) -> str | None:
+    """Returns the public IP as seen through tinyproxy (port 8119) inside the container.
+
+    Uses --proxy so the request routes through tinyproxy the same way Chrome does,
+    giving a true picture of the IP the browser will appear to have.
+
+    Retries on failure to handle tinyproxy still starting up.
+    """
+    for attempt in range(1, retries + 1):
+        try:
+            result = await asyncio.to_thread(
+                run_podman,
+                [
+                    "exec",
+                    container_name,
+                    "curl",
+                    "-s",
+                    "--max-time",
+                    "10",
+                    "--proxy",
+                    "http://127.0.0.1:8119",
+                    "https://ip.fly.dev",
+                ],
+            )
+            ip = result.stdout.strip() or None
+            if ip:
+                return ip
+            logger.debug(
+                f"IP check attempt {attempt}/{retries} in {container_name}: empty response (stderr: {result.stderr.strip()!r})"
+            )
+        except subprocess.CalledProcessError as e:
+            logger.debug(
+                f"IP check attempt {attempt}/{retries} in {container_name} failed (exit {e.returncode}): {e.stderr.strip()!r}"
+            )
+        except Exception as e:
+            logger.debug(f"IP check attempt {attempt}/{retries} in {container_name} failed: {e}")
+        if attempt < retries:
+            await asyncio.sleep(retry_delay)
+    logger.warning(f"IP check in {container_name} failed after {retries} attempts")
+    return None
+
+
 @app.post("/api/v1/browsers/{browser_id}/configure")
 async def configure_browser(browser_id: str, request: Request, config: dict[str, Any]):
     logger.info(f"Configuring browser {browser_id} with config {config}...")
@@ -404,9 +446,8 @@ async def configure_browser(browser_id: str, request: Request, config: dict[str,
         logger.warning(detail)
         raise HTTPException(status_code=404, detail=detail)
     try:
-        origin_ip = request.headers.get("x-origin-ip")
         has_location_in_body = bool(config.get("location"))
-
+        origin_ip = request.headers.get("x-origin-ip") or request.headers.get("x-forwarded-for")
         if origin_ip and not settings.MAXMIND_ENABLED:
             logger.warning(
                 f"x-origin-ip={origin_ip} provided but MaxMind is not configured (missing MAXMIND_ACCOUNT_ID/MAXMIND_LICENSE_KEY) — location will not be resolved"
@@ -447,7 +488,18 @@ async def configure_browser(browser_id: str, request: Request, config: dict[str,
                 logger.debug(f"Generated MassiveProxy proxy_url for browser {browser_id}: {massive_url}")
                 config["proxy_url"] = massive_url
 
+        applying_proxy = bool(config.get("proxy_url"))
+        ip_before = await get_container_public_ip(container_name) if applying_proxy else None
+
         await configure_container(container_name, config)
+
+        if applying_proxy:
+            ip_after = await get_container_public_ip(container_name)
+            if ip_before and ip_after:
+                if ip_before != ip_after:
+                    logger.info(f"Browser {browser_id} IP changed: {ip_before} -> {ip_after}")
+                else:
+                    logger.warning(f"Browser {browser_id} IP unchanged after proxy configuration: {ip_before}")
         logger.info(f"Browser {browser_id} is configured.")
         return {"status": "configured"}
     except Exception as e:
