@@ -497,6 +497,9 @@ async def find_browser_id(page_id: str) -> str | None:
 
 
 def patch_cdp_target(message: str, browser_id: str) -> str:
+    if "targetId" not in message:
+        return message
+
     try:
         data = json.loads(message)
     except (json.JSONDecodeError, TypeError):
