@@ -527,6 +527,12 @@ async def configure_browser(browser_id: str, request: Request, config: dict[str,
         raise HTTPException(status_code=404, detail=detail)
     try:
         origin_ip = request.headers.get("x-origin-ip")
+        location_header = request.headers.get("x-location")
+        if location_header and "location" not in config:
+            try:
+                config["location"] = json.loads(location_header)
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid JSON in x-location header: {location_header!r}")
         await configure_remote_browser(browser_id, container_name, config, origin_ip)
         logger.info(f"Browser {browser_id} is configured.")
         return {"status": "configured"}
