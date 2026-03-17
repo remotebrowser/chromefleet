@@ -344,7 +344,7 @@ async def create_browser(browser_id: str, request: Request, config: dict[str, An
     try:
         await launch_container(settings.CONTAINER_IMAGE, container_name)
         logger.info(f"Browser {browser_id} is started.")
-        origin_ip = request.headers.get("x-origin-ip") or request.headers.get("x-forwarded-for")
+        origin_ip = request.headers.get("x-origin-ip")
         if config or origin_ip:
             await configure_remote_browser(browser_id, container_name, config or {}, origin_ip)
             logger.info(f"Browser {browser_id} configured inline at creation.")
@@ -449,7 +449,7 @@ async def configure_remote_browser(
 ) -> None:
     """Resolves proxy/location settings and applies configuration to a container.
 
-    origin_ip should be sourced from the x-origin-ip or x-forwarded-for request headers.
+    origin_ip should be sourced from the x-origin-ip request headers.
     Called from both the /configure endpoint and the create endpoint (when config is provided inline).
     """
     has_location_in_body = bool(config.get("location"))
