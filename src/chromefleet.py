@@ -338,15 +338,24 @@ async def health() -> str:
 
 
 @app.post("/api/v1/browsers/{browser_id}")
-async def create_browser(browser_id: str, request: Request, config: dict[str, Any] | None = None):
+async def create_browser(browser_id: str, request: Request):
     logger.info(f"Starting browser {browser_id}...")
     container_name = f"chromium-{browser_id}"
     try:
         await launch_container(settings.CONTAINER_IMAGE, container_name)
         logger.info(f"Browser {browser_id} is started.")
         origin_ip = request.headers.get("x-origin-ip")
-        if config or origin_ip:
-            await configure_remote_browser(browser_id, container_name, config or {}, origin_ip)
+        location_header = request.headers.get("x-location")
+
+        config: dict[str, Any] = {}
+        if location_header:
+            try:
+                config["location"] = json.loads(location_header)
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid JSON in x-location header: {location_header!r}")
+
+        if origin_ip or config:
+            await configure_remote_browser(browser_id, container_name, config, origin_ip=origin_ip)
             logger.info(f"Browser {browser_id} configured inline at creation.")
         return {"container_name": container_name, "status": "created"}
     except Exception as e:
@@ -517,7 +526,7 @@ async def configure_browser(browser_id: str, request: Request, config: dict[str,
         logger.warning(detail)
         raise HTTPException(status_code=404, detail=detail)
     try:
-        origin_ip = request.headers.get("x-origin-ip") or request.headers.get("x-forwarded-for")
+        origin_ip = request.headers.get("x-origin-ip")
         await configure_remote_browser(browser_id, container_name, config, origin_ip)
         logger.info(f"Browser {browser_id} is configured.")
         return {"status": "configured"}
@@ -606,6 +615,9 @@ async def find_browser_id(page_id: str) -> str | None:
 
 
 def patch_cdp_target(message: str, browser_id: str) -> str:
+    if "targetId" not in message:
+        return message
+
     try:
         data = json.loads(message)
     except (json.JSONDecodeError, TypeError):
