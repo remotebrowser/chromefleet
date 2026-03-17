@@ -29,9 +29,9 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocketState
+from location_service import get_location_by_ip
 from loguru import logger
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from location_service import get_location_by_ip
 from residential_proxy import Location, format_massive_proxy_url_from_location
 from rich.logging import RichHandler
 from sentry_sdk.integrations.fastapi import FastApiIntegration
@@ -405,6 +405,7 @@ async def configure_browser(browser_id: str, request: Request, config: dict[str,
         raise HTTPException(status_code=404, detail=detail)
     try:
         origin_ip = request.headers.get("x-origin-ip")
+        location_header = request.headers.get("x-location")
         has_location_in_body = bool(config.get("location"))
 
         if origin_ip and not settings.MAXMIND_ENABLED:
@@ -414,6 +415,10 @@ async def configure_browser(browser_id: str, request: Request, config: dict[str,
         if origin_ip and not settings.MASSIVE_PROXY_ENABLED:
             logger.warning(
                 f"x-origin-ip={origin_ip} provided but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — proxy will not be set"
+            )
+        if location_header and not settings.MASSIVE_PROXY_ENABLED:
+            logger.warning(
+                f"x-location={location_header} provided but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — location will be ignored"
             )
         if has_location_in_body and not settings.MASSIVE_PROXY_ENABLED:
             logger.warning(
@@ -432,6 +437,13 @@ async def configure_browser(browser_id: str, request: Request, config: dict[str,
                         location_data = {k: v for k, v in geo.items() if v is not None}
                     else:
                         logger.warning(f"MaxMind returned no location for x-origin-ip={origin_ip}")
+
+            if location_data is None and location_header:
+                try:
+                    location_data = json.loads(location_header)
+                    logger.debug(f"Using location from x-location header: {location_data}")
+                except json.JSONDecodeError:
+                    logger.warning(f"x-location header is not valid JSON, ignoring: {location_header!r}")
 
             if location_data is None and has_location_in_body:
                 location_data = dict(config["location"])
