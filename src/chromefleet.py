@@ -338,12 +338,25 @@ async def health() -> str:
 
 
 @app.post("/api/v1/browsers/{browser_id}")
-async def create_browser(browser_id: str):
+async def create_browser(browser_id: str, request: Request):
     logger.info(f"Starting browser {browser_id}...")
     container_name = f"chromium-{browser_id}"
     try:
         await launch_container(settings.CONTAINER_IMAGE, container_name)
         logger.info(f"Browser {browser_id} is started.")
+        origin_ip = request.headers.get("x-origin-ip")
+        location_header = request.headers.get("x-location")
+
+        config: dict[str, Any] = {}
+        if location_header:
+            try:
+                config["location"] = json.loads(location_header)
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid JSON in x-location header: {location_header!r}")
+
+        if origin_ip or config:
+            await configure_remote_browser(browser_id, container_name, config, origin_ip=origin_ip)
+            logger.info(f"Browser {browser_id} configured inline at creation.")
         return {"container_name": container_name, "status": "created"}
     except Exception as e:
         detail = f"Unable to start browser {browser_id}!"
@@ -395,6 +408,115 @@ async def list_browsers():
         raise HTTPException(status_code=500, detail=detail)
 
 
+async def get_container_public_ip(container_name: str, *, retries: int = 5, retry_delay: float = 2.0) -> str | None:
+    """Returns the public IP as seen through tinyproxy (port 8119) inside the container.
+
+    Uses --proxy so the request routes through tinyproxy the same way Chrome does,
+    giving a true picture of the IP the browser will appear to have.
+
+    Retries on failure to handle tinyproxy still starting up.
+    """
+    for attempt in range(1, retries + 1):
+        try:
+            result = await asyncio.to_thread(
+                run_podman,
+                [
+                    "exec",
+                    container_name,
+                    "curl",
+                    "-s",
+                    "--max-time",
+                    "10",
+                    "--proxy",
+                    "http://127.0.0.1:8119",
+                    "https://ip.fly.dev",
+                ],
+            )
+            ip = result.stdout.strip() or None
+            if ip:
+                return ip
+            logger.debug(
+                f"IP check attempt {attempt}/{retries} in {container_name}: empty response (stderr: {result.stderr.strip()!r})"
+            )
+        except subprocess.CalledProcessError as e:
+            logger.debug(
+                f"IP check attempt {attempt}/{retries} in {container_name} failed (exit {e.returncode}): {e.stderr.strip()!r}"
+            )
+        except Exception as e:
+            logger.debug(f"IP check attempt {attempt}/{retries} in {container_name} failed: {e}")
+        if attempt < retries:
+            await asyncio.sleep(retry_delay)
+    logger.warning(f"IP check in {container_name} failed after {retries} attempts")
+    return None
+
+
+async def configure_remote_browser(
+    browser_id: str,
+    container_name: str,
+    config: dict[str, Any],
+    origin_ip: str | None,
+) -> None:
+    """Resolves proxy/location settings and applies configuration to a container.
+
+    origin_ip should be sourced from the x-origin-ip request headers.
+    Called from both the /configure endpoint and the create endpoint (when config is provided inline).
+    """
+    has_location_in_body = bool(config.get("location"))
+
+    if origin_ip and not settings.MAXMIND_ENABLED:
+        logger.warning(
+            f"x-origin-ip={origin_ip} provided but MaxMind is not configured (missing MAXMIND_ACCOUNT_ID/MAXMIND_LICENSE_KEY) — location will not be resolved"
+        )
+    if origin_ip and not settings.MASSIVE_PROXY_ENABLED:
+        logger.warning(
+            f"x-origin-ip={origin_ip} provided but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — proxy will not be set"
+        )
+    if has_location_in_body and not settings.MASSIVE_PROXY_ENABLED:
+        logger.warning(
+            "location provided in config but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — location will be ignored"
+        )
+
+    if settings.MASSIVE_PROXY_ENABLED:
+        location_data: dict[str, Any] | None = None
+
+        if origin_ip:
+            if settings.MAXMIND_ENABLED:
+                logger.debug(f"Looking up location for x-origin-ip={origin_ip}")
+                geo = await get_location_by_ip(origin_ip, settings.MAXMIND_ACCOUNT_ID, settings.MAXMIND_LICENSE_KEY)
+                if geo:
+                    logger.info(f"MaxMind resolved {origin_ip} -> {geo}")
+                    location_data = {k: v for k, v in geo.items() if v is not None}
+                else:
+                    logger.warning(f"MaxMind returned no location for x-origin-ip={origin_ip}")
+
+        if location_data is None and has_location_in_body:
+            location_data = dict(config["location"])
+
+        if location_data:
+            location = Location(**location_data)
+            massive_url = format_massive_proxy_url_from_location(
+                location,
+                proxy_session_id=browser_id,
+                proxy_username=settings.MASSIVE_PROXY_USERNAME,
+                proxy_password=settings.MASSIVE_PROXY_PASSWORD,
+            )
+            logger.debug(f"Generated MassiveProxy proxy_url for browser {browser_id}: {massive_url}")
+            config["proxy_url"] = massive_url
+    applying_proxy = bool(config.get("proxy_url"))
+    ip_before = await get_container_public_ip(container_name)
+    logger.debug(f"Browser {browser_id} IP before applying config: {ip_before}")
+
+    await configure_container(container_name, config)
+
+    if applying_proxy:
+        ip_after = await get_container_public_ip(container_name)
+        if ip_before and ip_after:
+            if ip_before != ip_after:
+                logger.info(f"Browser {browser_id} IP changed: {ip_before} -> {ip_after}")
+            else:
+                logger.warning(f"Browser {browser_id} IP unchanged after proxy configuration: {ip_before}")
+
+
 @app.post("/api/v1/browsers/{browser_id}/configure")
 async def configure_browser(browser_id: str, request: Request, config: dict[str, Any]):
     logger.info(f"Configuring browser {browser_id} with config {config}...")
@@ -406,60 +528,12 @@ async def configure_browser(browser_id: str, request: Request, config: dict[str,
     try:
         origin_ip = request.headers.get("x-origin-ip")
         location_header = request.headers.get("x-location")
-        has_location_in_body = bool(config.get("location"))
-
-        if origin_ip and not settings.MAXMIND_ENABLED:
-            logger.warning(
-                f"x-origin-ip={origin_ip} provided but MaxMind is not configured (missing MAXMIND_ACCOUNT_ID/MAXMIND_LICENSE_KEY) — location will not be resolved"
-            )
-        if origin_ip and not settings.MASSIVE_PROXY_ENABLED:
-            logger.warning(
-                f"x-origin-ip={origin_ip} provided but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — proxy will not be set"
-            )
-        if location_header and not settings.MASSIVE_PROXY_ENABLED:
-            logger.warning(
-                f"x-location={location_header} provided but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — location will be ignored"
-            )
-        if has_location_in_body and not settings.MASSIVE_PROXY_ENABLED:
-            logger.warning(
-                "location provided in config but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — location will be ignored"
-            )
-
-        if settings.MASSIVE_PROXY_ENABLED:
-            location_data: dict[str, Any] | None = None
-
-            if origin_ip:
-                if settings.MAXMIND_ENABLED:
-                    logger.debug(f"Looking up location for x-origin-ip={origin_ip}")
-                    geo = await get_location_by_ip(origin_ip, settings.MAXMIND_ACCOUNT_ID, settings.MAXMIND_LICENSE_KEY)
-                    if geo:
-                        logger.info(f"MaxMind resolved {origin_ip} -> {geo}")
-                        location_data = {k: v for k, v in geo.items() if v is not None}
-                    else:
-                        logger.warning(f"MaxMind returned no location for x-origin-ip={origin_ip}")
-
-            if location_data is None and location_header:
-                try:
-                    location_data = json.loads(location_header)
-                    logger.debug(f"Using location from x-location header: {location_data}")
-                except json.JSONDecodeError:
-                    logger.warning(f"x-location header is not valid JSON, ignoring: {location_header!r}")
-
-            if location_data is None and has_location_in_body:
-                location_data = dict(config["location"])
-
-            if location_data:
-                location = Location(**location_data)
-                massive_url = format_massive_proxy_url_from_location(
-                    location,
-                    proxy_session_id=browser_id,
-                    proxy_username=settings.MASSIVE_PROXY_USERNAME,
-                    proxy_password=settings.MASSIVE_PROXY_PASSWORD,
-                )
-                logger.debug(f"Generated MassiveProxy proxy_url for browser {browser_id}: {massive_url}")
-                config["proxy_url"] = massive_url
-
-        await configure_container(container_name, config)
+        if location_header and "location" not in config:
+            try:
+                config["location"] = json.loads(location_header)
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid JSON in x-location header: {location_header!r}")
+        await configure_remote_browser(browser_id, container_name, config, origin_ip)
         logger.info(f"Browser {browser_id} is configured.")
         return {"status": "configured"}
     except Exception as e:
