@@ -60,7 +60,9 @@ def format_massive_proxy_url_from_location(
     username_template = f"{proxy_username}"
     if location.country:
         username_template += f"-country-{location.country}"
-    if location.state:
+    if (
+        location.state and len(location.state) == 2
+    ):  # only add state if it's a valid 2-letter code (currently only supporting US states)
         username_template += f"-subdivision-{location.state.upper()}"
     elif (
         location.postal_code

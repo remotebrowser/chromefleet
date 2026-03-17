@@ -446,6 +446,8 @@ async def configure_browser(browser_id: str, request: Request, config: dict[str,
         logger.warning(detail)
         raise HTTPException(status_code=404, detail=detail)
     try:
+        origin_ip = request.headers.get("x-origin-ip")
+        location_header = request.headers.get("x-location")
         has_location_in_body = bool(config.get("location"))
         origin_ip = request.headers.get("x-origin-ip") or request.headers.get("x-forwarded-for")
         if origin_ip and not settings.MAXMIND_ENABLED:
@@ -455,6 +457,10 @@ async def configure_browser(browser_id: str, request: Request, config: dict[str,
         if origin_ip and not settings.MASSIVE_PROXY_ENABLED:
             logger.warning(
                 f"x-origin-ip={origin_ip} provided but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — proxy will not be set"
+            )
+        if location_header and not settings.MASSIVE_PROXY_ENABLED:
+            logger.warning(
+                f"x-location={location_header} provided but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — location will be ignored"
             )
         if has_location_in_body and not settings.MASSIVE_PROXY_ENABLED:
             logger.warning(
@@ -473,6 +479,13 @@ async def configure_browser(browser_id: str, request: Request, config: dict[str,
                         location_data = {k: v for k, v in geo.items() if v is not None}
                     else:
                         logger.warning(f"MaxMind returned no location for x-origin-ip={origin_ip}")
+
+            if location_data is None and location_header:
+                try:
+                    location_data = json.loads(location_header)
+                    logger.debug(f"Using location from x-location header: {location_data}")
+                except json.JSONDecodeError:
+                    logger.warning(f"x-location header is not valid JSON, ignoring: {location_header!r}")
 
             if location_data is None and has_location_in_body:
                 location_data = dict(config["location"])
@@ -588,6 +601,9 @@ async def find_browser_id(page_id: str) -> str | None:
 
 
 def patch_cdp_target(message: str, browser_id: str) -> str:
+    if "targetId" not in message:
+        return message
+
     try:
         data = json.loads(message)
     except (json.JSONDecodeError, TypeError):
