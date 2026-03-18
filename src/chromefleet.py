@@ -344,14 +344,7 @@ async def create_browser(browser_id: str, request: Request):
         await launch_container(settings.CONTAINER_IMAGE, container_name)
         logger.info(f"Browser {browser_id} is started.")
         origin_ip = request.headers.get("x-origin-ip")
-        location_header = request.headers.get("x-location")
-
         config: dict[str, Any] = {}
-        if location_header:
-            try:
-                config["location"] = json.loads(location_header)
-            except json.JSONDecodeError:
-                logger.warning(f"Invalid JSON in x-location header: {location_header!r}")
 
         ip: str | None = None
         if origin_ip or config:
@@ -462,8 +455,6 @@ async def configure_remote_browser(
     Called from both the /configure endpoint and the create endpoint (when config is provided inline).
     Returns the container's public IP after configuration (post-proxy if a proxy was applied), or None.
     """
-    has_location_in_body = bool(config.get("location"))
-
     if origin_ip and not settings.MAXMIND_ENABLED:
         logger.warning(
             f"x-origin-ip={origin_ip} provided but MaxMind is not configured (missing MAXMIND_ACCOUNT_ID/MAXMIND_LICENSE_KEY) — location will not be resolved"
@@ -472,11 +463,6 @@ async def configure_remote_browser(
         logger.warning(
             f"x-origin-ip={origin_ip} provided but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — proxy will not be set"
         )
-    if has_location_in_body and not settings.MASSIVE_PROXY_ENABLED:
-        logger.warning(
-            "location provided in config but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — location will be ignored"
-        )
-
     if settings.MASSIVE_PROXY_ENABLED:
         location: MassiveLocation | None = None
 
@@ -492,9 +478,6 @@ async def configure_remote_browser(
                     )
                 else:
                     logger.warning(f"MaxMind returned no location for x-origin-ip={origin_ip}")
-
-        if location is None and has_location_in_body:
-            location = MassiveLocation(**config["location"])
 
         if location:
             massive_url = MassiveProxy.format_url(
@@ -532,12 +515,6 @@ async def configure_browser(browser_id: str, request: Request, config: dict[str,
         raise HTTPException(status_code=404, detail=detail)
     try:
         origin_ip = request.headers.get("x-origin-ip")
-        location_header = request.headers.get("x-location")
-        if location_header and "location" not in config:
-            try:
-                config["location"] = json.loads(location_header)
-            except json.JSONDecodeError:
-                logger.warning(f"Invalid JSON in x-location header: {location_header!r}")
         ip = await configure_remote_browser(browser_id, container_name, config, origin_ip)
         logger.info(f"Browser {browser_id} is configured.")
         return {"status": "configured", "ip": ip}
