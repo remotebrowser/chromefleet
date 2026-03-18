@@ -29,10 +29,9 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocketState
-from location_service import get_location_by_ip
 from loguru import logger
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from residential_proxy import Location, format_massive_proxy_url_from_location
+from residential_proxy import MassiveLocation, MassiveProxy
 from rich.logging import RichHandler
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
@@ -477,28 +476,26 @@ async def configure_remote_browser(
         )
 
     if settings.MASSIVE_PROXY_ENABLED:
-        location_data: dict[str, Any] | None = None
+        location: MassiveLocation | None = None
 
         if origin_ip:
             if settings.MAXMIND_ENABLED:
                 logger.debug(f"Looking up location for x-origin-ip={origin_ip}")
-                geo = await get_location_by_ip(origin_ip, settings.MAXMIND_ACCOUNT_ID, settings.MAXMIND_LICENSE_KEY)
-                if geo:
-                    logger.info(f"MaxMind resolved {origin_ip} -> {geo}")
-                    location_data = {k: v for k, v in geo.items() if v is not None}
+                location = await MassiveProxy.get_location(origin_ip, settings.MAXMIND_ACCOUNT_ID, settings.MAXMIND_LICENSE_KEY)
+                if location:
+                    logger.info(f"MaxMind resolved {origin_ip} -> country={location.country} subdivision={location.subdivision} city={location.city}")
                 else:
                     logger.warning(f"MaxMind returned no location for x-origin-ip={origin_ip}")
 
-        if location_data is None and has_location_in_body:
-            location_data = dict(config["location"])
+        if location is None and has_location_in_body:
+            location = MassiveLocation(**config["location"])
 
-        if location_data:
-            location = Location(**location_data)
-            massive_url = format_massive_proxy_url_from_location(
+        if location:
+            massive_url = MassiveProxy.format_url(
                 location,
-                proxy_session_id=browser_id,
-                proxy_username=settings.MASSIVE_PROXY_USERNAME,
-                proxy_password=settings.MASSIVE_PROXY_PASSWORD,
+                session_id=browser_id,
+                username=settings.MASSIVE_PROXY_USERNAME,
+                password=settings.MASSIVE_PROXY_PASSWORD,
             )
             logger.debug(f"Generated MassiveProxy proxy_url for browser {browser_id}: {massive_url}")
             config["proxy_url"] = massive_url
