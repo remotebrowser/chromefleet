@@ -37,6 +37,10 @@ jobs:
         run: uv run pytest tests/ -v -s
         env:
           CHROMEFLEET_URL: http://localhost:8300
+          MASSIVE_PROXY_USERNAME: ${{ secrets.MASSIVE_PROXY_USERNAME }}
+          MASSIVE_PROXY_PASSWORD: ${{ secrets.MASSIVE_PROXY_PASSWORD }}
+          MAXMIND_ACCOUNT_ID: ${{ secrets.MAXMIND_ACCOUNT_ID }}
+          MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
 
       - name: Show chromefleet logs
         if: always()
