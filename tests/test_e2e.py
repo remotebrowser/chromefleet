@@ -1,7 +1,6 @@
 import asyncio
 import os
 import sys
-import time
 
 import httpx
 import pytest
@@ -82,43 +81,6 @@ class TestBrowserListing:
         assert isinstance(response.json(), list)
 
 
-class TestBrowserConfiguration:
-    @pytest.fixture(autouse=True)
-    def cleanup(self, client):
-        self.browser_ids = []
-        yield
-        for browser_id in self.browser_ids:
-            try:
-                client.delete(f"/api/v1/browsers/{browser_id}")
-            except Exception:
-                pass
-
-    def test_configure_browser(self, client):
-        client.post("/api/v1/browsers/test06")
-        self.browser_ids.append("test06")
-        for _ in range(10):
-            response = client.get("/api/v1/browsers/test06")
-            if response.status_code == 200:
-                print(f"Browser ready: {response.json()}")
-                break
-            print(f"Browser not ready (status {response.status_code}), waiting...")
-            time.sleep(3)
-        response = client.post(
-            "/api/v1/browsers/test06/configure",
-            json={"proxy_url": "http://proxy.example.com:8080"},
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "configured"
-
-    def test_configure_nonexistent_browser(self, client):
-        response = client.post(
-            "/api/v1/browsers/nonexistent-browser/configure",
-            json={"proxy_url": "http://proxy.example.com:8080"},
-        )
-        assert response.status_code == 404
-
-
 class TestProxyIp:
     # Uses 128.101.101.101 (University of Minnesota) which MaxMind resolves to US/MN.
     ORIGIN_IP = "128.101.101.101"
@@ -139,7 +101,7 @@ class TestProxyIp:
         self.browser_ids.append(browser_id)
 
         asyncio.run(launch_container(settings.CONTAINER_IMAGE, container_name))
-        ip_after = asyncio.run(configure_remote_browser(browser_id, container_name, {}, origin_ip=self.ORIGIN_IP))
+        ip_after = asyncio.run(configure_remote_browser(browser_id, container_name, self.ORIGIN_IP))
 
         assert ip_after is not None, "Expected a public IP after proxy configuration"
 

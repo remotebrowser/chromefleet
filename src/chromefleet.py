@@ -255,10 +255,10 @@ async def get_container_last_activity(container_name: str) -> float | None:
         return None
 
 
-async def configure_container(container_name: str, config: dict[str, Any]) -> None:
-    logger.info(f"Configuring container {container_name} with config {config}...")
+async def configure_container(container_name: str, proxy_url: str | None) -> None:
+    logger.info(f"Configuring container {container_name} with proxy_url={proxy_url}...")
 
-    if proxy_url := config.get("proxy_url", ""):
+    if proxy_url:
         try:
             proxy_url = proxy_url.removeprefix("http://")
             logger.debug(f"Configuring proxy with proxy_url: {proxy_url}")
@@ -344,11 +344,10 @@ async def create_browser(browser_id: str, request: Request):
         await launch_container(settings.CONTAINER_IMAGE, container_name)
         logger.info(f"Browser {browser_id} is started.")
         origin_ip = request.headers.get("x-origin-ip")
-        config: dict[str, Any] = {}
 
         ip: str | None = None
-        if origin_ip or config:
-            ip = await configure_remote_browser(browser_id, container_name, config, origin_ip=origin_ip)
+        if origin_ip:
+            ip = await configure_remote_browser(browser_id, container_name, origin_ip)
             logger.info(f"Browser {browser_id} configured inline at creation.")
         return {"container_name": container_name, "status": "created", "ip": ip}
     except Exception as e:
@@ -446,13 +445,12 @@ async def get_container_public_ip(container_name: str, *, retries: int = 5, retr
 async def configure_remote_browser(
     browser_id: str,
     container_name: str,
-    config: dict[str, Any],
     origin_ip: str | None,
 ) -> str | None:
     """Resolves proxy/location settings and applies configuration to a container.
 
     origin_ip should be sourced from the x-origin-ip request headers.
-    Called from both the /configure endpoint and the create endpoint (when config is provided inline).
+    Called from both the /configure endpoint and the create endpoint (when origin_ip is provided).
     Returns the container's public IP after configuration (post-proxy if a proxy was applied), or None.
     """
     if origin_ip and not settings.MAXMIND_ENABLED:
@@ -463,6 +461,7 @@ async def configure_remote_browser(
         logger.warning(
             f"x-origin-ip={origin_ip} provided but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — proxy will not be set"
         )
+    proxy_url: str | None = None
     if settings.MASSIVE_PROXY_ENABLED:
         location: MassiveLocation | None = None
 
@@ -480,21 +479,19 @@ async def configure_remote_browser(
                     logger.warning(f"MaxMind returned no location for x-origin-ip={origin_ip}")
 
         if location:
-            massive_url = MassiveProxy.format_url(
+            proxy_url = MassiveProxy.format_url(
                 location,
                 session_id=browser_id,
                 username=settings.MASSIVE_PROXY_USERNAME,
                 password=settings.MASSIVE_PROXY_PASSWORD,
             )
-            logger.debug(f"Generated MassiveProxy proxy_url for browser {browser_id}: {massive_url}")
-            config["proxy_url"] = massive_url
-    applying_proxy = bool(config.get("proxy_url"))
+            logger.debug(f"Generated MassiveProxy proxy_url for browser {browser_id}: {proxy_url}")
     ip_before = await get_container_public_ip(container_name)
     logger.debug(f"Browser {browser_id} IP before applying config: {ip_before}")
 
-    await configure_container(container_name, config)
+    await configure_container(container_name, proxy_url)
 
-    if applying_proxy:
+    if proxy_url:
         ip_after = await get_container_public_ip(container_name)
         if ip_before and ip_after:
             if ip_before != ip_after:
@@ -506,8 +503,8 @@ async def configure_remote_browser(
 
 
 @app.post("/api/v1/browsers/{browser_id}/configure")
-async def configure_browser(browser_id: str, request: Request, config: dict[str, Any]):
-    logger.info(f"Configuring browser {browser_id} with config {config}...")
+async def configure_browser(browser_id: str, request: Request):
+    logger.info(f"Configuring browser {browser_id}...")
     container_name = f"chromium-{browser_id}"
     if not await container_exists(container_name):
         detail = f"Browser {browser_id} not found!"
@@ -515,7 +512,7 @@ async def configure_browser(browser_id: str, request: Request, config: dict[str,
         raise HTTPException(status_code=404, detail=detail)
     try:
         origin_ip = request.headers.get("x-origin-ip")
-        ip = await configure_remote_browser(browser_id, container_name, config, origin_ip)
+        ip = await configure_remote_browser(browser_id, container_name, origin_ip)
         logger.info(f"Browser {browser_id} is configured.")
         return {"status": "configured", "ip": ip}
     except Exception as e:
