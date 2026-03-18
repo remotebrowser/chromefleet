@@ -1,8 +1,13 @@
+import asyncio
 import os
+import sys
 import time
 
 import httpx
 import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+from chromefleet import configure_remote_browser, kill_container, launch_container, settings
 
 CHROMEFLEET_URL = os.getenv("CHROMEFLEET_URL", "http://localhost:8300")
 
@@ -112,3 +117,33 @@ class TestBrowserConfiguration:
             json={"proxy_url": "http://proxy.example.com:8080"},
         )
         assert response.status_code == 404
+
+
+class TestProxyIp:
+    # Uses 128.101.101.101 (University of Minnesota) which MaxMind resolves to US/MN.
+    ORIGIN_IP = "128.101.101.101"
+
+    @pytest.fixture(autouse=True)
+    def cleanup(self):
+        self.browser_ids = []
+        yield
+        for browser_id in self.browser_ids:
+            try:
+                asyncio.run(kill_container(f"chromium-{browser_id}"))
+            except Exception:
+                pass
+
+    def test_ip_changes_with_origin_ip(self):
+        browser_id = "test-proxy-ip"
+        container_name = f"chromium-{browser_id}"
+        self.browser_ids.append(browser_id)
+
+        asyncio.run(launch_container(settings.CONTAINER_IMAGE, container_name))
+        ip_after = asyncio.run(
+            configure_remote_browser(browser_id, container_name, {}, origin_ip=self.ORIGIN_IP)
+        )
+
+        assert ip_after is not None, "Expected a public IP after proxy configuration"
+
+        my_ip = httpx.get("https://ip.fly.dev", timeout=10).text.strip()
+        assert ip_after != my_ip, f"Expected IP to change after proxy, but got {ip_after} (same as local {my_ip})"
