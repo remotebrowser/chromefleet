@@ -483,9 +483,13 @@ async def configure_remote_browser(
         if origin_ip:
             if settings.MAXMIND_ENABLED:
                 logger.debug(f"Looking up location for x-origin-ip={origin_ip}")
-                location = await MassiveProxy.get_location(origin_ip, settings.MAXMIND_ACCOUNT_ID, settings.MAXMIND_LICENSE_KEY)
+                location = await MassiveProxy.get_location(
+                    origin_ip, settings.MAXMIND_ACCOUNT_ID, settings.MAXMIND_LICENSE_KEY
+                )
                 if location:
-                    logger.info(f"MaxMind resolved {origin_ip} -> country={location.country} subdivision={location.subdivision} city={location.city}")
+                    logger.info(
+                        f"MaxMind resolved {origin_ip} -> country={location.country} subdivision={location.subdivision} city={location.city}"
+                    )
                 else:
                     logger.warning(f"MaxMind returned no location for x-origin-ip={origin_ip}")
 

@@ -139,9 +139,7 @@ class TestProxyIp:
         self.browser_ids.append(browser_id)
 
         asyncio.run(launch_container(settings.CONTAINER_IMAGE, container_name))
-        ip_after = asyncio.run(
-            configure_remote_browser(browser_id, container_name, {}, origin_ip=self.ORIGIN_IP)
-        )
+        ip_after = asyncio.run(configure_remote_browser(browser_id, container_name, {}, origin_ip=self.ORIGIN_IP))
 
         assert ip_after is not None, "Expected a public IP after proxy configuration"
 

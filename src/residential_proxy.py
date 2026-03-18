@@ -101,9 +101,9 @@ class MassiveProxy:
             location.subdivision and len(location.subdivision) == 2
         ):  # only add subdivision if it's a valid 2-letter code (currently only supporting US subdivisions)
             username_template += f"-subdivision-{location.subdivision.upper()}"
-        elif (
-            location.postal_code
-        ):  # don't want to unnecessarily constrain the pool size by adding postal code if subdivision is already specified
+        elif location.postal_code:  # don't want to unnecessarily constrain the pool size by adding postal code if subdivision is already specified
             username_template += f"-zipcode-{location.postal_code}"
         # max ttl is 240 mins: https://docs.joinmassive.com/residential/sticky-sessions
-        return f"http://{username_template}-session-{session_id}-sessionttl-240:{password}@network.joinmassive.com:65534"
+        return (
+            f"http://{username_template}-session-{session_id}-sessionttl-240:{password}@network.joinmassive.com:65534"
+        )
