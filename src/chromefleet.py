@@ -29,10 +29,9 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocketState
-from location_service import get_location_by_ip
 from loguru import logger
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from residential_proxy import Location, format_massive_proxy_url_from_location
+from residential_proxy import MassiveLocation, MassiveProxy
 from rich.logging import RichHandler
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
@@ -354,10 +353,11 @@ async def create_browser(browser_id: str, request: Request):
             except json.JSONDecodeError:
                 logger.warning(f"Invalid JSON in x-location header: {location_header!r}")
 
+        ip: str | None = None
         if origin_ip or config:
-            await configure_remote_browser(browser_id, container_name, config, origin_ip=origin_ip)
+            ip = await configure_remote_browser(browser_id, container_name, config, origin_ip=origin_ip)
             logger.info(f"Browser {browser_id} configured inline at creation.")
-        return {"container_name": container_name, "status": "created"}
+        return {"container_name": container_name, "status": "created", "ip": ip}
     except Exception as e:
         detail = f"Unable to start browser {browser_id}!"
         logger.error(f"{detail} Exception={e}")
@@ -455,11 +455,12 @@ async def configure_remote_browser(
     container_name: str,
     config: dict[str, Any],
     origin_ip: str | None,
-) -> None:
+) -> str | None:
     """Resolves proxy/location settings and applies configuration to a container.
 
     origin_ip should be sourced from the x-origin-ip request headers.
     Called from both the /configure endpoint and the create endpoint (when config is provided inline).
+    Returns the container's public IP after configuration (post-proxy if a proxy was applied), or None.
     """
     has_location_in_body = bool(config.get("location"))
 
@@ -477,28 +478,30 @@ async def configure_remote_browser(
         )
 
     if settings.MASSIVE_PROXY_ENABLED:
-        location_data: dict[str, Any] | None = None
+        location: MassiveLocation | None = None
 
         if origin_ip:
             if settings.MAXMIND_ENABLED:
                 logger.debug(f"Looking up location for x-origin-ip={origin_ip}")
-                geo = await get_location_by_ip(origin_ip, settings.MAXMIND_ACCOUNT_ID, settings.MAXMIND_LICENSE_KEY)
-                if geo:
-                    logger.info(f"MaxMind resolved {origin_ip} -> {geo}")
-                    location_data = {k: v for k, v in geo.items() if v is not None}
+                location = await MassiveProxy.get_location(
+                    origin_ip, settings.MAXMIND_ACCOUNT_ID, settings.MAXMIND_LICENSE_KEY
+                )
+                if location:
+                    logger.info(
+                        f"MaxMind resolved {origin_ip} -> country={location.country} subdivision={location.subdivision} city={location.city}"
+                    )
                 else:
                     logger.warning(f"MaxMind returned no location for x-origin-ip={origin_ip}")
 
-        if location_data is None and has_location_in_body:
-            location_data = dict(config["location"])
+        if location is None and has_location_in_body:
+            location = MassiveLocation(**config["location"])
 
-        if location_data:
-            location = Location(**location_data)
-            massive_url = format_massive_proxy_url_from_location(
+        if location:
+            massive_url = MassiveProxy.format_url(
                 location,
-                proxy_session_id=browser_id,
-                proxy_username=settings.MASSIVE_PROXY_USERNAME,
-                proxy_password=settings.MASSIVE_PROXY_PASSWORD,
+                session_id=browser_id,
+                username=settings.MASSIVE_PROXY_USERNAME,
+                password=settings.MASSIVE_PROXY_PASSWORD,
             )
             logger.debug(f"Generated MassiveProxy proxy_url for browser {browser_id}: {massive_url}")
             config["proxy_url"] = massive_url
@@ -515,6 +518,8 @@ async def configure_remote_browser(
                 logger.info(f"Browser {browser_id} IP changed: {ip_before} -> {ip_after}")
             else:
                 logger.warning(f"Browser {browser_id} IP unchanged after proxy configuration: {ip_before}")
+        return ip_after
+    return ip_before
 
 
 @app.post("/api/v1/browsers/{browser_id}/configure")
@@ -533,9 +538,9 @@ async def configure_browser(browser_id: str, request: Request, config: dict[str,
                 config["location"] = json.loads(location_header)
             except json.JSONDecodeError:
                 logger.warning(f"Invalid JSON in x-location header: {location_header!r}")
-        await configure_remote_browser(browser_id, container_name, config, origin_ip)
+        ip = await configure_remote_browser(browser_id, container_name, config, origin_ip)
         logger.info(f"Browser {browser_id} is configured.")
-        return {"status": "configured"}
+        return {"status": "configured", "ip": ip}
     except Exception as e:
         detail = f"Unable to configure browser {browser_id}!"
         logger.error(f"{detail} Exception={e}")
