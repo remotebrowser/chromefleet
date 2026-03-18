@@ -497,7 +497,6 @@ async def configure_remote_browser(
     return ip_before
 
 
-
 @app.get("/api/v1/suspend/{browser_id}")
 async def suspend_browser(browser_id: str):
     raise HTTPException(status_code=501, detail="Not implemented")
