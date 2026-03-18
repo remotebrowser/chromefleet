@@ -23,6 +23,11 @@ jobs:
 
       - name: Run chromefleet
         run: uv run src/chromefleet.py &> chromefleet.log &
+        env:
+          MASSIVE_PROXY_USERNAME: ${{ secrets.MASSIVE_PROXY_USERNAME }}
+          MASSIVE_PROXY_PASSWORD: ${{ secrets.MASSIVE_PROXY_PASSWORD }}
+          MAXMIND_ACCOUNT_ID: ${{ secrets.MAXMIND_ACCOUNT_ID }}
+          MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
 
       - name: Wait for health check
         run: while ! curl -s 'http://localhost:8300/health' | grep 'OK'; do sleep 1; done
