@@ -344,11 +344,7 @@ async def create_browser(browser_id: str, request: Request):
         await launch_container(settings.CONTAINER_IMAGE, container_name)
         logger.info(f"Browser {browser_id} is started.")
         origin_ip = request.headers.get("x-origin-ip")
-
-        ip: str | None = None
-        if origin_ip:
-            ip = await configure_remote_browser(browser_id, container_name, origin_ip)
-            logger.info(f"Browser {browser_id} configured inline at creation.")
+        ip = await configure_remote_browser(browser_id, container_name, origin_ip)
         return {"container_name": container_name, "status": "created", "ip": ip}
     except Exception as e:
         detail = f"Unable to start browser {browser_id}!"
@@ -449,8 +445,7 @@ async def configure_remote_browser(
 ) -> str | None:
     """Resolves proxy/location settings and applies configuration to a container.
 
-    origin_ip should be sourced from the x-origin-ip request headers.
-    Called from both the /configure endpoint and the create endpoint (when origin_ip is provided).
+    origin_ip should be sourced from the x-origin-ip request header, passed at browser creation.
     Returns the container's public IP after configuration (post-proxy if a proxy was applied), or None.
     """
     if origin_ip and not settings.MAXMIND_ENABLED:
@@ -501,24 +496,6 @@ async def configure_remote_browser(
         return ip_after
     return ip_before
 
-
-@app.post("/api/v1/browsers/{browser_id}/configure")
-async def configure_browser(browser_id: str, request: Request):
-    logger.info(f"Configuring browser {browser_id}...")
-    container_name = f"chromium-{browser_id}"
-    if not await container_exists(container_name):
-        detail = f"Browser {browser_id} not found!"
-        logger.warning(detail)
-        raise HTTPException(status_code=404, detail=detail)
-    try:
-        origin_ip = request.headers.get("x-origin-ip")
-        ip = await configure_remote_browser(browser_id, container_name, origin_ip)
-        logger.info(f"Browser {browser_id} is configured.")
-        return {"status": "configured", "ip": ip}
-    except Exception as e:
-        detail = f"Unable to configure browser {browser_id}!"
-        logger.error(f"{detail} Exception={e}")
-        raise HTTPException(status_code=500, detail=detail)
 
 
 @app.get("/api/v1/suspend/{browser_id}")
