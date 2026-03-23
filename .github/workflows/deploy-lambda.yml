@@ -53,7 +53,7 @@ jobs:
               env:
                   APP_URL: ${{ secrets.LAMBDA_URL }}
               run: |-
-                  LOCAL_COMMIT=$(git rev-parse HEAD)
+                  LOCAL_COMMIT=$(git rev-parse --short=10 HEAD)
                   echo "Target: lambda"
                   echo "Local commit: $LOCAL_COMMIT"
                   echo "App URL: $APP_URL"
