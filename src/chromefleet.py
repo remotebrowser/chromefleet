@@ -174,11 +174,10 @@ async def launch_container(image_name: str, container_name: str) -> str:
         "--rm",
         "--name",
         container_name,
-        "--cpus",
-        "1",
-        "--memory",
-        "2048m",
     ]
+    # CI runs cgroups v1 which doesn't support per-container resource limits, so only apply limits when not in CI.
+    if not os.environ.get("CI"):
+        cmd.extend(["--cpus", "1", "--memory", "2048m"])
     # On macOS, Podman runs in a VM. This specific container image requires --privileged
     # to correctly access system services (like DBus) and devices inside that VM.
     if sys.platform == "darwin":
