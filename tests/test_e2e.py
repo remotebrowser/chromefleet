@@ -4,6 +4,7 @@ import sys
 
 import httpx
 import pytest
+import websockets
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from chromefleet import configure_remote_browser, kill_container, launch_container, settings
@@ -107,3 +108,33 @@ class TestProxyIp:
 
         my_ip = httpx.get("https://ip.fly.dev", timeout=10).text.strip()
         assert ip_after != my_ip, f"Expected IP to change after proxy, but got {ip_after} (same as local {my_ip})"
+
+
+class TestAutoStart:
+    @pytest.fixture(autouse=True)
+    def cleanup(self, client):
+        self.browser_ids: list[str] = []
+        yield
+        for browser_id in self.browser_ids:
+            try:
+                client.delete(f"/api/v1/browsers/{browser_id}")
+            except Exception:
+                pass
+
+    def test_cdp_websocket_autostart(self, client):
+        browser_id = "test-autostart"
+        self.browser_ids.append(browser_id)
+
+        # Ensure the container does not already exist
+        client.delete(f"/api/v1/browsers/{browser_id}")
+
+        ws_base = CHROMEFLEET_URL.replace("http://", "ws://").replace("https://", "wss://")
+
+        async def connect_and_verify():
+            async with websockets.connect(f"{ws_base}/cdp/{browser_id}", open_timeout=60):
+                pass  # successful connection confirms the container was auto-started
+
+        asyncio.run(connect_and_verify())
+
+        response = client.get(f"/api/v1/browsers/{browser_id}")
+        assert response.status_code == 200
