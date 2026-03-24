@@ -142,6 +142,9 @@ def setup_logging() -> None:
         lib_logger.addHandler(rich_handler)
         lib_logger.propagate = False
 
+    websockets_logger = logging.getLogger("websockets")
+    websockets_logger.setLevel(max(logging.getLevelNamesMapping()[settings.LOG_LEVEL], logging.INFO))
+
 
 setup_logging()
 
