@@ -135,15 +135,28 @@ def setup_logging() -> None:
 
     _setup_sentry()
 
+    class _NoWebSocketsFrames(logging.Filter):
+        """Drop low-level websocket frame DEBUG records.
+
+        Uvicorn passes its own ``uvicorn.error`` logger into the websockets
+        protocol object, so those frame-level messages bypass any level cap on
+        the ``websockets`` logger hierarchy and flow through ``uvicorn.error``
+        instead.  Filter them out here by source path.
+        """
+
+        def filter(self, record: logging.LogRecord) -> bool:
+            if record.levelno >= logging.INFO:
+                return True
+            return "websockets" not in record.pathname
+
+    _no_ws_frames = _NoWebSocketsFrames()
     for lib_logger_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
         lib_logger = logging.getLogger(lib_logger_name)
         lib_logger.setLevel(settings.LOG_LEVEL)
         lib_logger.handlers.clear()
         lib_logger.addHandler(rich_handler)
+        lib_logger.addFilter(_no_ws_frames)
         lib_logger.propagate = False
-
-    websockets_logger = logging.getLogger("websockets")
-    websockets_logger.setLevel(max(logging.getLevelNamesMapping()[settings.LOG_LEVEL], logging.INFO))
 
 
 setup_logging()
