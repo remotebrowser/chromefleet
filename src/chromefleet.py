@@ -214,6 +214,14 @@ async def container_exists(container_name: str) -> bool:
         return False
 
 
+async def container_is_running(container_name: str) -> bool:
+    try:
+        result = run_podman(["inspect", "--format", "{{.State.Running}}", container_name])
+        return result.stdout.strip() == "true"
+    except subprocess.CalledProcessError:
+        return False
+
+
 async def kill_container(container_name: str):
     logger.info(f"Killing Chromium container {container_name}...")
     try:
@@ -376,7 +384,7 @@ async def delete_browser(browser_id: str):
 async def get_browser(browser_id: str, request: Request):
     logger.info(f"Querying browser {browser_id}...")
     container_name = f"chromium-{browser_id}"
-    if not await container_exists(container_name):
+    if not await container_is_running(container_name):
         detail = f"Browser {browser_id} not found!"
         logger.warning(detail)
         raise HTTPException(status_code=404, detail=detail)
