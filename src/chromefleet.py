@@ -415,7 +415,6 @@ async def get_browser(browser_id: str, request: Request):
         ip = await configure_remote_browser(browser_id, container_name, origin_ip)
     else:
         ip = await get_container_public_ip(container_name)
-    ip = await get_container_public_ip(container_name)
     return {"last_activity_timestamp": last_activity_timestamp, "ip": ip}
 
 
