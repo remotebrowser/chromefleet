@@ -373,7 +373,8 @@ async def create_browser(browser_id: str, request: HTTPConnection):
         await launch_container(settings.CONTAINER_IMAGE, container_name)
         logger.info(f"Browser {browser_id} is started.")
         origin_ip = request.headers.get("x-origin-ip")
-        ip = await configure_remote_browser(browser_id, container_name, origin_ip)
+        target_domains = parse_target_domains(request.headers.get("x-target-domains"))
+        ip = await configure_remote_browser(browser_id, container_name, origin_ip, target_domains)
         return {"container_name": container_name, "status": "created", "ip": ip}
     except Exception as e:
         detail = f"Unable to start browser {browser_id}!"
@@ -410,8 +411,9 @@ async def get_browser(browser_id: str, request: Request):
     last_activity_timestamp = await get_container_last_activity(container_name)
     logger.debug(f"Browser {browser_id}: last_activity_timestamp={last_activity_timestamp}.")
     origin_ip = request.headers.get("x-origin-ip")
-    if origin_ip:
-        ip = await configure_remote_browser(browser_id, container_name, origin_ip)
+    target_domains = parse_target_domains(request.headers.get("x-target-domains"))
+    if origin_ip or target_domains:
+        ip = await configure_remote_browser(browser_id, container_name, origin_ip, target_domains)
     else:
         ip = await get_container_public_ip(container_name)
     return {"last_activity_timestamp": last_activity_timestamp, "ip": ip}
@@ -472,29 +474,52 @@ async def get_container_public_ip(container_name: str, *, retries: int = 5, retr
     return None
 
 
+def parse_target_domains(header_value: str | None) -> list[str]:
+    """Parse comma-separated x-target-domains header into a list of lowercased domains."""
+    if not header_value:
+        return []
+    return [d.strip().lower() for d in header_value.split(",") if d.strip()]
+
+
 async def configure_remote_browser(
     browser_id: str,
     container_name: str,
     origin_ip: str | None,
+    target_domains: list[str] | None = None,
 ) -> str | None:
     """Resolves proxy/location settings and applies configuration to a container.
 
-    origin_ip should be sourced from the x-origin-ip request header, passed at browser creation.
+    Residential proxy is enabled when MASSIVE_PROXY_ENABLED is true AND either:
+    - origin_ip is provided (geo-targeted proxy via MaxMind), or
+    - target_domains is non-empty (caller hints that residential proxy is needed)
+
     Returns the container's public IP after configuration (post-proxy if a proxy was applied), or None.
     """
+    if target_domains:
+        logger.info(f"x-target-domains received for browser {browser_id}: {target_domains}")
+
     if origin_ip and not settings.MAXMIND_ENABLED:
         logger.warning(
             f"x-origin-ip={origin_ip} provided but MaxMind is not configured (missing MAXMIND_ACCOUNT_ID/MAXMIND_LICENSE_KEY) — location will not be resolved"
         )
-    if origin_ip and not settings.MASSIVE_PROXY_ENABLED:
+    if (origin_ip or target_domains) and not settings.MASSIVE_PROXY_ENABLED:
         logger.warning(
-            f"x-origin-ip={origin_ip} provided but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — proxy will not be set"
+            f"Proxy requested but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — proxy will not be set"
         )
     proxy_url: str | None = None
     if settings.MASSIVE_PROXY_ENABLED:
-        location: MassiveLocation | None = None
-
-        if origin_ip:
+        if target_domains:
+            # Domain-hint path: use residential proxy without geo-targeting
+            proxy_url = (
+                f"http://{settings.MASSIVE_PROXY_USERNAME}"
+                f"-session-{browser_id}-sessionttl-240"
+                f":{settings.MASSIVE_PROXY_PASSWORD}"
+                f"@network.joinmassive.com:65534"
+            )
+            logger.debug(f"Generated MassiveProxy proxy_url (domain hint) for browser {browser_id}: {proxy_url}")
+        elif origin_ip:
+            # Origin-IP path: geo-targeted proxy via MaxMind
+            location: MassiveLocation | None = None
             if settings.MAXMIND_ENABLED:
                 logger.debug(f"Looking up location for x-origin-ip={origin_ip}")
                 location = await MassiveProxy.get_location(
@@ -507,14 +532,14 @@ async def configure_remote_browser(
                 else:
                     logger.warning(f"MaxMind returned no location for x-origin-ip={origin_ip}")
 
-        if location:
-            proxy_url = MassiveProxy.format_url(
-                location,
-                session_id=browser_id,
-                username=settings.MASSIVE_PROXY_USERNAME,
-                password=settings.MASSIVE_PROXY_PASSWORD,
-            )
-            logger.debug(f"Generated MassiveProxy proxy_url for browser {browser_id}: {proxy_url}")
+            if location:
+                proxy_url = MassiveProxy.format_url(
+                    location,
+                    session_id=browser_id,
+                    username=settings.MASSIVE_PROXY_USERNAME,
+                    password=settings.MASSIVE_PROXY_PASSWORD,
+                )
+                logger.debug(f"Generated MassiveProxy proxy_url for browser {browser_id}: {proxy_url}")
     ip_before = await get_container_public_ip(container_name)
     logger.debug(f"Browser {browser_id} IP before applying config: {ip_before}")
 
