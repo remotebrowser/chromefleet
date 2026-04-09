@@ -504,7 +504,7 @@ async def configure_remote_browser(
         )
     if (origin_ip or target_domains) and not settings.MASSIVE_PROXY_ENABLED:
         logger.warning(
-            f"Proxy requested but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — proxy will not be set"
+            "Proxy requested but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — proxy will not be set"
         )
     proxy_url: str | None = None
     if settings.MASSIVE_PROXY_ENABLED:
