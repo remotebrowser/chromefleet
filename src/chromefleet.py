@@ -484,7 +484,7 @@ async def configure_remote_browser(
     browser_id: str,
     container_name: str,
     origin_ip: str | None,
-    target_domains: list[str] = [],
+    target_domains: list[str] | None = None,
 ) -> str | None:
     """Resolves proxy/location settings and applies configuration to a container.
 
@@ -501,20 +501,12 @@ async def configure_remote_browser(
         logger.warning(
             "Proxy requested but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — proxy will not be set"
         )
+    target_domains = target_domains or []
     proxy_url: str | None = None
     if settings.MASSIVE_PROXY_ENABLED:
-        if target_domains:
-            # Domain-hint path: use residential proxy without geo-targeting
-            proxy_url = (
-                f"http://{settings.MASSIVE_PROXY_USERNAME}"
-                f"-session-{browser_id}-sessionttl-240"
-                f":{settings.MASSIVE_PROXY_PASSWORD}"
-                f"@network.joinmassive.com:65534"
-            )
-            logger.debug(f"Generated MassiveProxy proxy_url (domain hint) for browser {browser_id}: {proxy_url}")
-        elif origin_ip:
-            # Origin-IP path: geo-targeted proxy via MaxMind
-            location: MassiveLocation | None = None
+        location: MassiveLocation | None = None
+
+        if origin_ip:
             if settings.MAXMIND_ENABLED:
                 logger.debug(f"Looking up location for x-origin-ip={origin_ip}")
                 location = await MassiveProxy.get_location(
@@ -527,14 +519,14 @@ async def configure_remote_browser(
                 else:
                     logger.warning(f"MaxMind returned no location for x-origin-ip={origin_ip}")
 
-            if location:
-                proxy_url = MassiveProxy.format_url(
-                    location,
-                    session_id=browser_id,
-                    username=settings.MASSIVE_PROXY_USERNAME,
-                    password=settings.MASSIVE_PROXY_PASSWORD,
-                )
-                logger.debug(f"Generated MassiveProxy proxy_url for browser {browser_id}: {proxy_url}")
+        if location:
+            proxy_url = MassiveProxy.format_url(
+                location,
+                session_id=browser_id,
+                username=settings.MASSIVE_PROXY_USERNAME,
+                password=settings.MASSIVE_PROXY_PASSWORD,
+            )
+            logger.debug(f"Generated MassiveProxy proxy_url for browser {browser_id}: {proxy_url}")
     ip_before = await get_container_public_ip(container_name)
     logger.debug(f"Browser {browser_id} IP before applying config: {ip_before}")
 
