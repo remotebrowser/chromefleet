@@ -484,19 +484,15 @@ async def configure_remote_browser(
     browser_id: str,
     container_name: str,
     origin_ip: str | None,
-    target_domains: list[str] | None = None,
+    target_domains: list[str] = [],
 ) -> str | None:
     """Resolves proxy/location settings and applies configuration to a container.
 
-    Residential proxy is enabled when MASSIVE_PROXY_ENABLED is true AND either:
-    - origin_ip is provided (geo-targeted proxy via MaxMind), or
-    - target_domains is non-empty (caller hints that residential proxy is needed)
+    origin_ip should be sourced from the x-origin-ip request header, passed at browser creation.
+    target_domains should be sourced from the x-target-domains request header, passed at browser creation.
 
     Returns the container's public IP after configuration (post-proxy if a proxy was applied), or None.
     """
-    if target_domains:
-        logger.info(f"x-target-domains received for browser {browser_id}: {target_domains}")
-
     if origin_ip and not settings.MAXMIND_ENABLED:
         logger.warning(
             f"x-origin-ip={origin_ip} provided but MaxMind is not configured (missing MAXMIND_ACCOUNT_ID/MAXMIND_LICENSE_KEY) — location will not be resolved"
