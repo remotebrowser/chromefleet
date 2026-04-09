@@ -284,6 +284,41 @@ async def get_container_last_activity(container_name: str) -> float | None:
         return None
 
 
+async def _wait_for_tinyproxy(container_name: str, *, retries: int = 10, delay: float = 0.5) -> None:
+    """Poll tinyproxy until it accepts connections on port 8119."""
+    for attempt in range(1, retries + 1):
+        try:
+            result = await asyncio.to_thread(
+                run_podman,
+                [
+                    "exec",
+                    container_name,
+                    "curl",
+                    "-s",
+                    "-o",
+                    "/dev/null",
+                    "-w",
+                    "%{http_code}",
+                    "--max-time",
+                    "2",
+                    "--proxy",
+                    "http://127.0.0.1:8119",
+                    "http://ip.fly.dev",
+                ],
+            )
+            if result.stdout.strip():
+                logger.debug(f"tinyproxy in {container_name} ready (attempt {attempt})")
+                return
+        except subprocess.CalledProcessError:
+            pass
+        except Exception:
+            pass
+        logger.debug(f"tinyproxy in {container_name} not ready (attempt {attempt}/{retries})")
+        if attempt < retries:
+            await asyncio.sleep(delay)
+    logger.warning(f"tinyproxy in {container_name} did not become ready after {retries} attempts")
+
+
 async def configure_container(container_name: str, proxy_url: str | None) -> None:
     logger.info(f"Configuring container {container_name} with proxy_url={proxy_url}...")
 
@@ -331,6 +366,7 @@ async def configure_container(container_name: str, proxy_url: str | None) -> Non
                     "tinyproxy -d -c /app/tinyproxy.conf &",
                 ]
             )
+            await _wait_for_tinyproxy(container_name)
             logger.info(f"Proxy configured successfully in {container_name}.")
         except subprocess.CalledProcessError as e:
             raise Exception(f"Error configuring proxy: {e}")
