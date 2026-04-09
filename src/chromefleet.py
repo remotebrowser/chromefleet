@@ -410,6 +410,11 @@ async def get_browser(browser_id: str, request: Request):
         raise HTTPException(status_code=404, detail=detail)
     last_activity_timestamp = await get_container_last_activity(container_name)
     logger.debug(f"Browser {browser_id}: last_activity_timestamp={last_activity_timestamp}.")
+    origin_ip = request.headers.get("x-origin-ip")
+    if origin_ip:
+        ip = await configure_remote_browser(browser_id, container_name, origin_ip)
+    else:
+        ip = await get_container_public_ip(container_name)
     ip = await get_container_public_ip(container_name)
     return {"last_activity_timestamp": last_activity_timestamp, "ip": ip}
 
