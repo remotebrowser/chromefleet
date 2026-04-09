@@ -557,7 +557,7 @@ async def configure_remote_browser(
     await configure_container(container_name, proxy_url)
 
     if proxy_url:
-        ip_after = await get_container_public_ip(container_name)
+        ip_after = await get_container_public_ip(container_name, retries=10, retry_delay=3.0)
         if ip_before and ip_after:
             if ip_before != ip_after:
                 logger.info(f"Browser {browser_id} IP changed: {ip_before} -> {ip_after}")
