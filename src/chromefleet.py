@@ -848,7 +848,7 @@ async def websockify_proxy(websocket: WebSocket, browser_id: str):
                 writer.write(data)
                 await writer.drain()
         except Exception:
-            writer.close()
+            pass
 
     async def vnc_to_ws():
         try:
@@ -861,6 +861,8 @@ async def websockify_proxy(websocket: WebSocket, browser_id: str):
             pass
 
     await asyncio.gather(ws_to_vnc(), vnc_to_ws())
+    writer.close()
+    await writer.wait_closed()
 
 
 _base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
