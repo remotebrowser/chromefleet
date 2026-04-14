@@ -12,7 +12,6 @@ import sys
 # when frozen so pydantic skips the entry point entirely.
 if getattr(sys, "frozen", False):
     os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "1")
-import urllib.request
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +20,7 @@ import yaml
 if TYPE_CHECKING:
     from loguru import Record
 
+import httpx
 import logfire
 import sentry_sdk
 import uvicorn
@@ -556,28 +556,26 @@ async def get_cdp_url(browser_id: str) -> str:
 async def get_cdp_websocket_url(browser_id: str) -> str:
     cdp_url = await get_cdp_url(browser_id)
 
-    def fetch():
-        with urllib.request.urlopen(f"{cdp_url}/json/version", timeout=10) as response:
-            data = json.loads(response.read().decode())
-            logger.debug(f"[CDP] CDP json version gives {data}")
-            return data["webSocketDebuggerUrl"]
-
-    return await asyncio.to_thread(fetch)
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(f"{cdp_url}/json/version")
+        response.raise_for_status()
+        data = response.json()
+        logger.debug(f"[CDP] CDP json version gives {data}")
+        return data["webSocketDebuggerUrl"]
 
 
 async def get_page_websocket_url(browser_id: str, page_id: str) -> str | None:
     try:
         cdp_url = await get_cdp_url(browser_id)
 
-        def fetch():
-            with urllib.request.urlopen(f"{cdp_url}/json/list", timeout=10) as response:
-                data = json.loads(response.read().decode())
-                for item in data:
-                    if item.get("id") == page_id:
-                        return item.get("webSocketDebuggerUrl")
-                return None
-
-        return await asyncio.to_thread(fetch)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{cdp_url}/json/list")
+            response.raise_for_status()
+            data = response.json()
+            for item in data:
+                if item.get("id") == page_id:
+                    return item.get("webSocketDebuggerUrl")
+            return None
     except Exception as e:
         logger.error(f"[CDP] Error getting page websocket URL for {browser_id}/{page_id}: {e}")
         return None
@@ -587,12 +585,11 @@ async def get_page_list(browser_id: str) -> list[str]:
     try:
         cdp_url = await get_cdp_url(browser_id)
 
-        def fetch():
-            with urllib.request.urlopen(f"{cdp_url}/json/list", timeout=10) as response:
-                data = json.loads(response.read().decode())
-                return [item["id"] for item in data]
-
-        return await asyncio.to_thread(fetch)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{cdp_url}/json/list")
+            response.raise_for_status()
+            data = response.json()
+            return [item["id"] for item in data]
     except Exception as e:
         logger.error(f"[CDP] Error getting page list for {browser_id}: {e}")
         return []
