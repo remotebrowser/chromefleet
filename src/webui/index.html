@@ -13,6 +13,12 @@
     <p id="status">Loading...</p>
     <div id="browsers-grid"
         style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 15px;"></div>
+    <hr>
+    <button id="cleanup-btn">Cleanup idle browsers</button>
+    <dialog id="cleanup-dialog">
+        <p id="cleanup-msg"></p>
+        <button onclick="$('cleanup-dialog').close()">Close</button>
+    </dialog>
     <script>
         const $ = id => document.getElementById(id);
 
@@ -101,6 +107,16 @@
 
         document.addEventListener('DOMContentLoaded', () => {
             update();
+            $('cleanup-btn').addEventListener('click', async () => {
+                const response = await fetch('/api/v1/cleanup');
+                const data = await response.json();
+                const count = data?.length ?? 0;
+                $('cleanup-msg').textContent = count === 0
+                    ? 'No idle browsers to delete.'
+                    : `Deleted ${count} idle browser${count === 1 ? '' : 's'}.`;
+                $('cleanup-dialog').showModal();
+                update();
+            });
         });
     </script>
 </body>

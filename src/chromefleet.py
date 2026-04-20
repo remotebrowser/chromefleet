@@ -467,7 +467,7 @@ async def cleanup_browsers():
                 logger.error(f"Failed to delete browser {browser['browser_id']}: {e.detail}")
 
     logger.info(f"Cleanup complete: total={len(browser_ids)} deleted={len(deleted)}")
-    return {"deleted": deleted}
+    return JSONResponse(deleted)
 
 
 async def get_container_public_ip(container_name: str, *, retries: int = 5, retry_delay: float = 2.0) -> str | None:
