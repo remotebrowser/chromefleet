@@ -270,8 +270,9 @@ async def list_containers() -> list[str]:
 
 
 async def get_container_last_activity(container_name: str) -> float | None:
+    logger.info(f"Fetching last activity for container {container_name}")
     try:
-        run_podman(["exec", container_name, "sh", "-c", "cp $HOME/chrome-profile/Default/History db"])
+        run_podman(["exec", container_name, "sh", "-c", "cp /home/user/chrome-profile/Default/History db"])
 
         result = run_podman(["exec", container_name, "sqlite3", "db", "select MAX(last_visit_time) from urls;"])
 
@@ -280,9 +281,13 @@ async def get_container_last_activity(container_name: str) -> float | None:
             unix_epoch = (chromium_time / 1_000_000) - 11644473600
             return unix_epoch
         return None
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as e:
+        logger.warning(
+            f"CalledProcessError fetching last activity for {container_name}: cmd={e.cmd}, returncode={e.returncode}, stderr={e.stderr!r}"
+        )
         return None
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Unexpected error fetching last activity for {container_name}: {type(e).__name__}: {e}")
         return None
 
 
