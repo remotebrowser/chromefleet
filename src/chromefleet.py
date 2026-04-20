@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import math
 import os
 import subprocess
 import sys
@@ -162,6 +163,7 @@ def setup_logging() -> None:
 setup_logging()
 
 DOCKER_INTERNAL_HOST = "172.17.0.1"
+MAX_IDLE = 15 * 60  # seconds
 
 
 def run_podman(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -428,6 +430,44 @@ async def list_browsers():
         detail = "Unable to list all browsers"
         logger.error(f"{detail} Exception={e}")
         raise HTTPException(status_code=500, detail=detail)
+
+
+@app.get("/api/v1/cleanup")
+async def cleanup_browsers():
+    logger.info("Running browser cleanup...")
+    try:
+        containers = await list_containers()
+        browser_ids = [c[len("chromium-") :] for c in containers if c.startswith("chromium-")]
+    except Exception as e:
+        detail = "Unable to list all browsers"
+        logger.error(f"{detail} Exception={e}")
+        raise HTTPException(status_code=500, detail=detail)
+
+    browsers: list[dict[str, Any]] = []
+    for browser_id in browser_ids:
+        container_name = f"chromium-{browser_id}"
+        last_activity_timestamp = await get_container_last_activity(container_name)
+        if last_activity_timestamp is None:
+            logger.debug(f"Skipping browser {browser_id}: error retrieving last activity")
+            continue
+        browsers.append({"browser_id": browser_id, "last_activity_timestamp": last_activity_timestamp})
+
+    now = datetime.now().timestamp()
+    deleted: list[str] = []
+    for browser in browsers:
+        idle_seconds = now - browser["last_activity_timestamp"]
+        idle_minutes = math.ceil(idle_seconds / 60)
+        logger.debug(f"Browser {browser['browser_id']} idle for {idle_minutes}m")
+        if idle_seconds > MAX_IDLE:
+            logger.info(f"Deleting browser {browser['browser_id']} (idle: {idle_minutes}m)")
+            try:
+                await delete_browser(browser["browser_id"])
+                deleted.append(browser["browser_id"])
+            except HTTPException as e:
+                logger.error(f"Failed to delete browser {browser['browser_id']}: {e.detail}")
+
+    logger.info(f"Cleanup complete: total={len(browser_ids)} deleted={len(deleted)}")
+    return {"deleted": deleted}
 
 
 async def get_container_public_ip(container_name: str, *, retries: int = 5, retry_delay: float = 2.0) -> str | None:
