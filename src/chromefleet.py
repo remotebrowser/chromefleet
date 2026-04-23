@@ -14,6 +14,7 @@ import sys
 if getattr(sys, "frozen", False):
     os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "1")
 from datetime import datetime
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 import yaml
@@ -361,7 +362,28 @@ def get_git_revision() -> str:
         return "unknown"
 
 
-app = FastAPI(title="Chrome Fleet")
+async def periodic_cleanup():
+    while True:
+        logger.debug("Running periodic cleanup...")
+        try:
+            await cleanup_browsers()
+        except Exception as e:
+            logger.error(f"Periodic cleanup error: {e}")
+        await asyncio.sleep(MAX_IDLE)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(periodic_cleanup())
+    yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+app = FastAPI(title="Chrome Fleet", lifespan=lifespan)
 if settings.LOGFIRE_TOKEN:
     logfire.instrument_fastapi(app, capture_headers=True, excluded_urls="/health")
 
