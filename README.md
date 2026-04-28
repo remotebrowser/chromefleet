@@ -49,15 +49,3 @@ _Example_: `curl localhost:8300/api/v1/browsers` returns:
 ```json
 ["xyz123", "abc234"]
 ```
-
-### Configure a browser
-
-`POST /api/v1/browsers/{browser_id}/configure` configures the browser with the specified `browser_id` using a JSON configuration body.
-
-Currently supported configuration options include `proxy_url`, which sets an HTTP(S) proxy for the browser.
-
-_Example_: `curl -X POST -H "Content-Type: application/json" -d '{"proxy_url": "http://proxy.example.com:8080"}' localhost:8300/api/v1/browsers/xyz123/configure` configures the proxy for browser `xyz123` and returns:
-
-```json
-{ "status": "configured" }
-```
