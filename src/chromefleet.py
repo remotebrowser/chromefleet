@@ -58,7 +58,6 @@ class Settings(BaseSettings):
     SENTRY_DSN: str = ""
     MAXMIND_ACCOUNT_ID: int = 0
     MAXMIND_LICENSE_KEY: str = ""
-    AUTO_START: bool = True
 
     @property
     def MASSIVE_PROXY_ENABLED(self) -> bool:
@@ -773,17 +772,12 @@ async def cdp_browser_websocket_proxy(client_ws: WebSocket, browser_id: str):
     logger.debug("[CDP] WebSocket accepted")
 
     if not await container_exists(container_name):
-        if settings.AUTO_START:
-            logger.info(f"[CDP] Container {container_name} not found, AUTO_START enabled — launching")
-            try:
-                await create_browser(browser_id, client_ws)
-                logger.info(f"[CDP] Container {container_name} started via AUTO_START")
-            except Exception as e:
-                logger.error(f"[CDP] Failed to auto-start container {container_name}: {e}")
-                await client_ws.close(code=1008)
-                return
-        else:
-            logger.error(f"[CDP] Container {container_name} not found")
+        logger.info(f"[CDP] Container {container_name} not found — launching")
+        try:
+            await create_browser(browser_id, client_ws)
+            logger.info(f"[CDP] Container {container_name} started")
+        except Exception as e:
+            logger.error(f"[CDP] Failed to auto-start container {container_name}: {e}")
             await client_ws.close(code=1008)
             return
 
