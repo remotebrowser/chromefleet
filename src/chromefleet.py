@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     SENTRY_DSN: str = ""
     MAXMIND_ACCOUNT_ID: int = 0
     MAXMIND_LICENSE_KEY: str = ""
+    MOBILE_PROXY_URL: str = ""
 
     @property
     def MASSIVE_PROXY_ENABLED(self) -> bool:
@@ -66,6 +67,10 @@ class Settings(BaseSettings):
     @property
     def MAXMIND_ENABLED(self) -> bool:
         return bool(self.MAXMIND_ACCOUNT_ID and self.MAXMIND_LICENSE_KEY)
+
+    @property
+    def MOBILE_PROXY_ENABLED(self) -> bool:
+        return bool(self.MOBILE_PROXY_URL)
 
 
 settings = Settings()
@@ -296,8 +301,17 @@ async def configure_container(container_name: str, proxy_url: str | None) -> Non
 
     if proxy_url:
         try:
-            proxy_url = proxy_url.removeprefix("http://")
-            logger.debug(f"Configuring proxy with proxy_url: {proxy_url}")
+            # Determine tinyproxy Upstream directive based on scheme
+            if proxy_url.startswith("socks5://"):
+                hostport = proxy_url.removeprefix("socks5://")
+                upstream_directive = f"upstream socks5 {hostport}"
+                upstream_sed_pattern = "/^upstream socks5/d"
+            else:
+                hostport = proxy_url.removeprefix("http://")
+                upstream_directive = f"upstream http {hostport}"
+                upstream_sed_pattern = "/^upstream http/d"
+
+            logger.debug(f"Configuring proxy: {upstream_directive}")
             logger.info(f"Modifying tinyproxy.conf in {container_name}...")
             run_podman(
                 [
@@ -305,7 +319,7 @@ async def configure_container(container_name: str, proxy_url: str | None) -> Non
                     container_name,
                     "sed",
                     "-i",
-                    "/^Upstream http/d",
+                    upstream_sed_pattern,
                     "/app/tinyproxy.conf",
                 ]
             )
@@ -315,7 +329,7 @@ async def configure_container(container_name: str, proxy_url: str | None) -> Non
                     container_name,
                     "sed",
                     "-i",
-                    f"$ a\\Upstream http {proxy_url}",
+                    f"$ a\\{upstream_directive}",
                     "/app/tinyproxy.conf",
                 ]
             )
@@ -335,7 +349,7 @@ async def configure_container(container_name: str, proxy_url: str | None) -> Non
                     container_name,
                     "sh",
                     "-c",
-                    "tinyproxy -d -c /app/tinyproxy.conf &",
+                    "tinyproxy -c /app/tinyproxy.conf",
                 ]
             )
             logger.info(f"Proxy configured successfully in {container_name}.")
@@ -391,6 +405,13 @@ if settings.LOGFIRE_TOKEN:
 async def health() -> str:
     git_rev = get_git_revision()[:10]
     return f"OK {int(datetime.now().timestamp())} GIT_REV: {git_rev}"
+
+
+async def open_initial_tab(browser_id: str) -> None:
+    cdp_url = await get_cdp_url(browser_id)
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        await client.get(f"{cdp_url}/json/new?https://ipinfo.io/json")
+    logger.info(f"Browser {browser_id} initial tab opened to ipinfo.io/json")
 
 
 @app.post("/api/v1/browsers/{browser_id}")
@@ -557,7 +578,10 @@ async def configure_remote_browser(
             f"x-origin-ip={origin_ip} provided but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — proxy will not be set"
         )
     proxy_url: str | None = None
-    if settings.MASSIVE_PROXY_ENABLED:
+    if settings.MOBILE_PROXY_ENABLED:
+        proxy_url = settings.MOBILE_PROXY_URL
+        logger.debug(f"Using mobile proxy for browser {browser_id}: {proxy_url}")
+    elif settings.MASSIVE_PROXY_ENABLED:
         location: MassiveLocation | None = None
 
         if origin_ip:
@@ -581,20 +605,14 @@ async def configure_remote_browser(
                 password=settings.MASSIVE_PROXY_PASSWORD,
             )
             logger.debug(f"Generated MassiveProxy proxy_url for browser {browser_id}: {proxy_url}")
-    ip_before = await get_container_public_ip(container_name)
-    logger.debug(f"Browser {browser_id} IP before applying config: {ip_before}")
-
     await configure_container(container_name, proxy_url)
 
+    if settings.MOBILE_PROXY_ENABLED:
+        return None
     if proxy_url:
         ip_after = await get_container_public_ip(container_name)
-        if ip_before and ip_after:
-            if ip_before != ip_after:
-                logger.info(f"Browser {browser_id} IP changed: {ip_before} -> {ip_after}")
-            else:
-                logger.warning(f"Browser {browser_id} IP unchanged after proxy configuration: {ip_before}")
         return ip_after
-    return ip_before
+    return await get_container_public_ip(container_name)
 
 
 @app.get("/api/v1/suspend/{browser_id}")
@@ -801,6 +819,11 @@ async def cdp_browser_websocket_proxy(client_ws: WebSocket, browser_id: str):
         logger.error("[CDP] No remote URL obtained")
         await client_ws.close(code=4502, reason="Failed to get debugger URL")
         return
+
+    try:
+        await open_initial_tab(browser_id)
+    except Exception as e:
+        logger.warning(f"[CDP] Initial tab failed (non-fatal): {e}")
 
     logger.info(f"[CDP] Client connected, proxying to {remote_url}")
     await websocket_proxy(client_ws, remote_url, browser_id)
