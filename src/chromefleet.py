@@ -422,7 +422,8 @@ async def create_browser(browser_id: str, request: HTTPConnection):
         await launch_container(settings.CONTAINER_IMAGE, container_name)
         logger.info(f"Browser {browser_id} is started.")
         origin_ip = request.headers.get("x-origin-ip")
-        ip = await configure_remote_browser(browser_id, container_name, origin_ip)
+        origin_id = request.headers.get("x-origin-id")
+        ip = await configure_remote_browser(browser_id, container_name, origin_ip, origin_id)
         return {"container_name": container_name, "status": "created", "ip": ip}
     except Exception as e:
         detail = f"Unable to start browser {browser_id}!"
@@ -459,8 +460,9 @@ async def get_browser(browser_id: str, request: Request):
     last_activity_timestamp = await get_container_last_activity(container_name)
     logger.debug(f"Browser {browser_id}: last_activity_timestamp={last_activity_timestamp}.")
     origin_ip = request.headers.get("x-origin-ip")
-    if origin_ip:
-        ip = await configure_remote_browser(browser_id, container_name, origin_ip)
+    origin_id = request.headers.get("x-origin-id")
+    if origin_ip or origin_id:
+        ip = await configure_remote_browser(browser_id, container_name, origin_ip, origin_id)
     else:
         ip = await get_container_public_ip(container_name)
     return {"last_activity_timestamp": last_activity_timestamp, "ip": ip}
@@ -563,10 +565,12 @@ async def configure_remote_browser(
     browser_id: str,
     container_name: str,
     origin_ip: str | None,
+    origin_id: str | None = None,
 ) -> str | None:
     """Resolves proxy/location settings and applies configuration to a container.
 
     origin_ip should be sourced from the x-origin-ip request header, passed at browser creation.
+    origin_id should be sourced from the x-origin-id request header (device ID for mobile proxy routing).
     Returns the container's public IP after configuration (post-proxy if a proxy was applied), or None.
     """
     if origin_ip and not settings.MAXMIND_ENABLED:
@@ -578,9 +582,14 @@ async def configure_remote_browser(
             f"x-origin-ip={origin_ip} provided but Massive proxy is not configured (missing MASSIVE_PROXY_USERNAME/MASSIVE_PROXY_PASSWORD) — proxy will not be set"
         )
     proxy_url: str | None = None
-    if settings.MOBILE_PROXY_ENABLED:
-        proxy_url = settings.MOBILE_PROXY_URL
-        logger.debug(f"Using mobile proxy for browser {browser_id}: {proxy_url}")
+    if origin_id is not None and settings.MOBILE_PROXY_ENABLED:
+        proxy_url = f"socks5://{origin_id}:x@{settings.MOBILE_PROXY_URL}"
+        logger.info(
+            "Configuring Mobile proxy",
+            mobile_proxy_url=settings.MOBILE_PROXY_URL,
+            mobile_proxy_username=origin_id,
+            reason="x-origin-id header is present and mobile proxy is enabled",
+        )
     elif settings.MASSIVE_PROXY_ENABLED:
         location: MassiveLocation | None = None
 
@@ -607,7 +616,7 @@ async def configure_remote_browser(
             logger.debug(f"Generated MassiveProxy proxy_url for browser {browser_id}: {proxy_url}")
     await configure_container(container_name, proxy_url)
 
-    if settings.MOBILE_PROXY_ENABLED:
+    if origin_id is not None and settings.MOBILE_PROXY_ENABLED:
         return None
     if proxy_url:
         ip_after = await get_container_public_ip(container_name)
