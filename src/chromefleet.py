@@ -583,7 +583,7 @@ async def configure_remote_browser(
         )
     proxy_url: str | None = None
     if origin_id is not None and settings.MOBILE_PROXY_ENABLED:
-        proxy_url = f"socks5://{origin_id}:x@{settings.MOBILE_PROXY_URL}"
+        proxy_url = f"http://{origin_id}:x@{settings.MOBILE_PROXY_URL}"
         logger.info(
             "Configuring Mobile proxy",
             mobile_proxy_url=settings.MOBILE_PROXY_URL,
